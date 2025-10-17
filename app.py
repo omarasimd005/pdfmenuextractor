@@ -41,7 +41,7 @@ st.title("Flipdish Menu Builder")
 
 # ============================== Utils ==============================
 
-def guid() -> string:
+def guid() -> str:
     return str(uuid.uuid4())
 
 def now_iso_hms() -> str:

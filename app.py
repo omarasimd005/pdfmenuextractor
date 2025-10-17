@@ -21,7 +21,6 @@ from typing import List, Dict, Any, Optional, Tuple
 
 import platform
 import sys
-import pkg_resources
 
 import streamlit as st
 from PIL import Image, ImageFile
@@ -56,10 +55,19 @@ def encode_image(img: Image.Image) -> str:
 def to_data_url(png: bytes) -> str:
     return "data:image/png;base64," + base64.b64encode(png).decode("utf-8")
 
+try:
+    from importlib.metadata import version, PackageNotFoundError  # Py>=3.8
+except Exception:
+    # very defensive fallback
+    version = None
+    class PackageNotFoundError(Exception): ...
+    
 def _pkg_ver(name, default="(not installed)"):
+    if version is None:
+        return default
     try:
-        return pkg_resources.get_distribution(name).version
-    except Exception:
+        return version(name)
+    except PackageNotFoundError:
         return default
 
 # ---------------- Robust loader ----------------

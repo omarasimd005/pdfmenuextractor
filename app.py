@@ -114,6 +114,41 @@ SMALL_WORDS = {
     "via", "with", "over", "under", "up", "down", "off"
 }
 
+# --- MODIFICATION: Added full list of Flipdish-accepted allergens ---
+FLIPDISH_ALLERGENS = {
+    "celery": "Celery",
+    "crustacean": "Crustaceans",
+    "crustaceans": "Crustaceans",
+    "egg": "Egg",
+    "eggs": "Egg",
+    "fish": "Fish",
+    "gluten": "Gluten",
+    "lupin": "Lupin",
+    "milk": "Milk",
+    "lactose": "Milk",
+    "dairy": "Milk",
+    "mollusc": "Molluscs",
+    "molluscs": "Molluscs",
+    "mustard": "Mustard",
+    "nut": "Nuts",
+    "nuts": "Nuts",
+    "peanut": "Peanuts",
+    "peanuts": "Peanuts",
+    "sesame": "Sesame",
+    "soya": "Soya",
+    "soy": "Soya",
+    "soybean": "Soybeans",
+    "soybeans": "Soybeans",
+    "sulphur": "Sulphur Dioxide",
+    "sulphur dioxide": "Sulphur Dioxide",
+    "sulphites": "Sulphur Dioxide",
+    "wheat": "Wheat",
+    "alcohol": "Alcohol"
+}
+FLIPDISH_ALLERGEN_LIST = sorted(list(set(FLIPDISH_ALLERGENS.values())))
+# --- END MODIFICATION ---
+
+
 def _cap_hyphenated(token: str) -> str:
     return "-".join(p.capitalize() if p else p for p in token.split("-"))
 
@@ -351,47 +386,49 @@ def try_load_rules() -> dict:
 
 # ============================== Vision extraction ==============================
 
-BASE_EXTRACTION_PROMPT = """
+# --- MODIFICATION: Added "dietary_tags" to schema and rules ---
+BASE_EXTRACTION_PROMPT = f"""
 You output ONLY JSON (no markdown) with this schema:
 
-{
+{{
   "name": string,
   "categories": [
-    {
+    {{
       "caption": string,
       "description": string,
       "items": [
-        {
+        {{
           "caption": string,
           "description": string,
           "notes": string,
           "price": number,
+          "dietary_tags": [string],
           "modifiers": [
-            {
+            {{
               "caption": string,
               "min": number|null,
               "max": number|null,
               "options": [
-                {
+                {{
                   "caption": string,
                   "price": number|null,
                   "modifiers": [
-                    {
+                    {{
                       "caption": string,
                       "min": number|null,
                       "max": number|null,
-                      "options": [{"caption": string, "price": number|null}]
-                    }
+                      "options": [{{"caption": string, "price": number|null}}]
+                    }}
                   ]
-                }
+                }}
               ]
-            }
+            }}
           ]
-        }
+        }}
       ]
-    }
+    }}
   ]
-}
+}}
 
 Detect modifiers from many phrasings:
 - "GOES WELL WITH X +Y, Z +W"
@@ -405,7 +442,10 @@ Rules:
 - Options without explicit price -> price=null.
 - Keep headings with a price as items; ignore decorative section headers.
 - **Special Offers:** If you find any deals, bundles, or special offers (e.g., "Family Meal," "Lunch Special," "2-for-1 Deal"), group them as items under a new category named "Special Offers".
+- **Allergens & Alcohol:** Look at item descriptions for text, logos, or symbols (e.g., (G), (N), (Ve), (Alc)) indicating allergens or alcohol. Populate `dietary_tags` with an array of strings.
+- **IMPORTANT:** Only use tag names from this EXACT list: {json.dumps(FLIPDISH_ALLERGEN_LIST)}
 """
+# --- END MODIFICATION ---
 
 def _img_hash(img: Image.Image) -> str:
     return hashlib.blake2b(img.tobytes(), digest_size=16).hexdigest()
@@ -432,6 +472,7 @@ def _run_openai_single_uncached(image: Image.Image, model: str = "gpt-4o", fewsh
                     "caption": "Combo Breakfast",
                     "description": "Choose main; if Waffles then choose syrup",
                     "price": 28,
+                    "dietary_tags": ["Gluten", "Egg", "Milk"],
                     "modifiers": [{
                         "caption": "Choose Main",
                         "min": 1, "max": 1,
@@ -751,9 +792,34 @@ def to_flipdish_json(
                         png = nearest_image_crop(page, rects[0])
                         if png: img_data_url = to_data_url(png)
 
-                # --- MODIFICATION: Use new format_description function for item notes ---
                 raw_item_notes = " ".join(p for p in [desc, notes, inline] if p).strip()
                 item_notes = format_description(raw_item_notes)
+                
+                # --- MODIFICATION: Build paramsJson for allergens/alcohol ---
+                params_json_obj = {}
+                dietary_tags_list = it.get("dietary_tags") or []
+                
+                # Also check raw description text for allergens the AI might have missed
+                for allergen_key, flipdish_tag in FLIPDISH_ALLERGENS.items():
+                    if flipdish_tag not in dietary_tags_list:
+                        # Check for (G), (N) etc.
+                        if re.search(fr'\([\s]*{re.escape(allergen_key[0])}[\s]*\)', raw, re.I) or \
+                           re.search(fr'\([\s]*{re.escape(allergen_key[0])}[\s]*\)', raw_item_notes, re.I):
+                            dietary_tags_list.append(flipdish_tag)
+                        # Check for full word
+                        elif re.search(fr'\b{re.escape(allergen_key)}\b', raw_item_notes, re.I):
+                             dietary_tags_list.append(flipdish_tag)
+
+                # Ensure tags are unique and in the allowed list
+                final_tags = sorted(list(set(
+                    [tag for tag in dietary_tags_list if tag in FLIPDISH_ALLERGEN_LIST]
+                )))
+                
+                if final_tags:
+                    params_json_obj["dietaryConfiguration"] = {
+                        "dietaryTags": ",".join(final_tags)
+                    }
+                
                 # --- END MODIFICATION ---
 
                 item = {
@@ -776,7 +842,9 @@ def to_flipdish_json(
                     "charges": [],
                     "modifierMembers": [],
                     "overrides": [],
-                    "imageUrl": img_data_url or ""
+                    "imageUrl": img_data_url or "",
+                    # --- MODIFICATION: Add the final paramsJson string ---
+                    "paramsJson": json.dumps(params_json_obj) if params_json_obj else "{}"
                 }
 
                 llm_mods = it.get("modifiers") or []
@@ -937,3 +1005,4 @@ with tab2:
             file_name=f"{fn_slug_2}.json", # Use dynamic file name
             mime="application/json"
         )
+    

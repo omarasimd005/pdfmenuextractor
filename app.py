@@ -637,6 +637,8 @@ def to_flipdish_json(
         for cat_in in (data.get("categories") or []):
             cat_caption_raw = (cat_in.get("caption") or "Category").strip()
             cat_caption = smart_title(cat_caption_raw).upper()
+            cat_caption = re.sub(r'\bAND\b', '&', cat_caption)
+            
             cat_description = (cat_in.get("description") or "").strip()  # <-- MODIFICATION
             ck = cat_caption.lower()
             if ck not in cat_index:

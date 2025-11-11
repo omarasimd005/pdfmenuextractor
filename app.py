@@ -15,213 +15,294 @@ import datetime
 import re
 import time
 import hashlib
-from dataclasses import dataclass
+import math
 from typing import List, Dict, Any, Optional, Tuple
 
-import requests
-from PIL import Image, ImageFile
-
 import streamlit as st
-from dotenv import load_dotenv
+from PIL import Image, ImageFile
 
 try:
     import fitz  # PyMuPDF
-except ImportError:
+except Exception:
     fitz = None
 
+from dotenv import load_dotenv
+
+try:
+    from openai import OpenAI
+except Exception:
+    OpenAI = None
+
+# --------- basic setup ---------
 ImageFile.LOAD_TRUNCATED_IMAGES = True
 load_dotenv()
-st.set_page_config(page_title="Flipdish Menu Builder", layout="wide")
+st.set_page_config(page_title="Flipdish Menu Builder", page_icon="🍽️", layout="centered")
+st.title("Flipdish Menu Builder")
 
-
-# ---------- Utilities ----------
+# ============================== Utils ==============================
 
 def guid() -> str:
     return str(uuid.uuid4())
 
+def now_iso_hms() -> str:
+    return datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
 
 def now_iso_z() -> str:
-    return datetime.datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+    return datetime.datetime.utcnow().isoformat() + "Z"
 
+def encode_image(img: Image.Image) -> str:
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return base64.b64encode(buf.getvalue()).decode("utf-8")
 
-def now_iso_hms() -> str:
-    return datetime.datetime.utcnow().replace(microsecond=0).isoformat()
+def to_data_url(png: bytes) -> str:
+    return "data:image/png;base64," + base64.b64encode(png).decode("utf-8")
 
+# ============================== Loaders ==============================
 
-def is_price_token(tok: str) -> bool:
-    return bool(re.search(r"\d", tok)) and any(ch.isdigit() for ch in tok)
+def _is_pdf(data: bytes) -> bool:
+    return data.startswith(b"%PDF")
 
+def _open_image_from_bytes(data: bytes) -> Image.Image:
+    im = Image.open(io.BytesIO(data))
+    im.load()
+    return im.convert("RGB")
 
-def parse_price_from_text(*chunks: str) -> Optional[float]:
-    text = " ".join([c for c in chunks if c]) or ""
-    text = text.replace(",", "")
-    m = re.search(r"([-+]?\d+(\.\d{1,2})?)", text)
-    if not m:
-        return None
+class LoadedFile:
+    def __init__(self, images: List[Image.Image], doc: Optional["fitz.Document"], is_pdf: bool):
+        self.images, self.doc, self.is_pdf = images, doc, is_pdf
+
+def load_file(file) -> LoadedFile:
+    if file is None:
+        return LoadedFile([], None, False)
     try:
-        return float(m.group(1))
-    except ValueError:
-        return None
+        file.seek(0)
+    except Exception:
+        pass
+    data = file.read()
+    if not data:
+        return LoadedFile([], None, False)
 
+    name = (getattr(file, "name", "") or "").lower()
+    if _is_pdf(data) or name.endswith(".pdf"):
+        if fitz is None:
+            return LoadedFile([], None, True)
+        try:
+            doc = fitz.open(stream=data, filetype="pdf")
+        except Exception:
+            return LoadedFile([], None, True)
+        pages = []
+        try:
+            for i in range(len(doc)):
+                pix = doc[i].get_pixmap(dpi=300)  # better fidelity
+                pages.append(Image.open(io.BytesIO(pix.tobytes("png"))).convert("RGB"))
+        except Exception:
+            return LoadedFile([], doc, True)
+        return LoadedFile(pages, doc, True)
 
-def to_data_url(png_bytes: bytes) -> str:
-    return "data:image/png;base64," + base64.b64encode(png_bytes).decode("ascii")
+    try:
+        img = _open_image_from_bytes(data)
+        return LoadedFile([img], None, False)
+    except Exception:
+        return LoadedFile([], None, False)
 
+# ============================== Text helpers ==============================
+
+SMALL_WORDS = {
+    "a", "an", "and", "as", "at", "but", "by", "for", "from", "in",
+    "into", "nor", "of", "on", "onto", "or", "per", "the", "to", "vs",
+    "via", "with", "over", "under", "up", "down", "off"
+}
+
+def _cap_hyphenated(token: str) -> str:
+    return "-".join(p.capitalize() if p else p for p in token.split("-"))
 
 def smart_title(text: str) -> str:
     if not text:
         return text
-    SMALL_WORDS = {
-        "a", "an", "the", "and", "but", "or", "for", "nor",
-        "as", "at", "by", "for", "from", "in", "into", "near",
-        "of", "on", "onto", "to", "vs", "via", "with"
-    }
-
-    def _cap_word(w: str) -> str:
-        if not w:
-            return w
-        if w.lower() in SMALL_WORDS:
-            return w.lower()
-        if w.isupper() and len(w) > 1:
-            return w
-        return w[0].upper() + w[1:].lower()
-
-    def _cap_hyphenated(token: str) -> str:
-        parts = token.split("-")
-        return "-".join(_cap_word(p) for p in parts)
-
-    if text.isupper():
-        return text
-
     tokens = re.split(r'(\s+)', text.strip())
     words_only = [t for t in tokens if not re.match(r'\s+', t)]
-    if not words_only:
-        return text
     result = []
     word_index = 0
     for t in tokens:
         if re.match(r'\s+', t):
-            result.append(t)
-            continue
+            result.append(t); continue
         lower = t.lower()
         if t.isupper() and len(t) > 1 and "-" not in t:
             out = t
         else:
             base = _cap_hyphenated(lower)
-            if (word_index == 0 or
-                word_index == len(words_only) - 1 or
-                lower not in SMALL_WORDS):
-                out = base[0].upper() + base[1:]
+            if (word_index == 0 or word_index == len(words_only) - 1 or lower not in SMALL_WORDS):
+                out = base[0].upper() + base[1:] if base else base
             else:
-                out = base
-        result.append(out)
-        word_index += 1
+                out = base.lower()
+        result.append(out); word_index += 1
     return "".join(result)
 
+# Category colors (optional – looks nice if Flipdish shows them)
+CATEGORY_COLOR_RULES = [
+    (re.compile(r"^(starter|starters)$", re.I), "#E67E22"),
+    (re.compile(r"^(main|mains)$", re.I), "#C0392B"),
+    (re.compile(r"^(side|sides)$", re.I), "#FBC02D"),
+    (re.compile(r"^(soup|soups)\s*/\s*(salad|salads)$", re.I), "#2E8B57"),
+    (re.compile(r"^(soup|soups)$", re.I), "#2E8B57"),
+    (re.compile(r"^(salad|salads)$", re.I), "#2E8B57"),
+    (re.compile(r"^(dessert|desserts)$", re.I), "#8E44AD"),
+    (re.compile(r"^(beverage|beverages|drink|drinks)$", re.I), "#9b9b9b"),
+    (re.compile(r"^(special|specials)$", re.I), "#FF66B2"),
+    (re.compile(r"^(kid|kids)\s*(menu)?$", re.I), "#3498DB"),
+    (re.compile(r"^(pizza|pizzas)$", re.I), "#D64541"),
+    (re.compile(r"^(burger|burgers)$", re.I), "#935116"),
+    (re.compile(r"^(sauce|sauces)$", re.I), "#FFDAB9"),
+    (re.compile(r"^(wine|wines|spirit|spirits|wines\s*/\s*spirits)$", re.I), "#2C3E50"),
+]
 
-def split_caption_and_inline_notes(caption: str) -> Tuple[str, str]:
-    if not caption:
-        return "", ""
-    m = re.match(r"^(.*?)(?:[-–—:]+\s*)(.*)$", caption.strip())
-    if m:
-        left = m.group(1).strip()
-        right = m.group(2).strip()
-        if right and " " in right:
-            return left, right
-    return caption.strip(), ""
+def _hex_to_rgb(hex_color: str) -> Tuple[int, int, int]:
+    h = hex_color.lstrip("#")
+    return tuple(int(h[i:i+2], 16) for i in (0, 2, 4))
 
+def _relative_luminance(rgb: Tuple[int, int, int]) -> float:
+    def _lin(c):
+        c = c / 255.0
+        return c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4
+    r, g, b = (_lin(v) for v in rgb)
+    return 0.2126*r + 0.7152*g + 0.0722*b
 
 def pick_category_colors(caption: str) -> Optional[Dict[str, str]]:
-    if not caption:
-        return None
-    low = caption.lower()
-    if any(k in low for k in ["breakfast", "brunch", "morning"]):
-        return {"backgroundColor": "#FFF7E6", "foregroundColor": "#5A3E1B"}
-    if any(k in low for k in ["burger", "grill", "bbq"]):
-        return {"backgroundColor": "#FFF0F0", "foregroundColor": "#7A1F1F"}
-    if any(k in low for k in ["pizza"]):
-        return {"backgroundColor": "#FFF5EB", "foregroundColor": "#6B2E11"}
-    if any(k in low for k in ["drinks", "beverages", "smoothies"]):
-        return {"backgroundColor": "#E8F7FF", "foregroundColor": "#0A3A5A"}
-    if any(k in low for k in ["dessert", "sweet"]):
-        return {"backgroundColor": "#FFF0FA", "foregroundColor": "#6A174F"}
+    if not caption: return None
+    norm = caption.strip()
+    for pat, bg in CATEGORY_COLOR_RULES:
+        if pat.match(norm):
+            fg = "#FFFFFF" if _relative_luminance(_hex_to_rgb(bg)) < 0.5 else "#000000"
+            return {"backgroundColor": bg, "foregroundColor": fg}
+    joined = re.sub(r"\s+", " ", norm, flags=re.I)
+    for pat, bg in CATEGORY_COLOR_RULES:
+        if pat.match(joined):
+            fg = "#FFFFFF" if _relative_luminance(_hex_to_rgb(bg)) < 0.5 else "#000000"
+            return {"backgroundColor": bg, "foregroundColor": fg}
     return None
 
+# ============================== Price parsing ==============================
 
-# ---------- Few-shot + Rules ----------
+PRICE_RE = re.compile(r'(?:£|\$|€)?\s*(\d{1,3}(?:\.\d{1,2})?)')
+PLUS_PRICE_RE = re.compile(r'(?i)^(?P<name>.*?\S)\s*(?:\+|plus\s*)(?P<price>\d+(?:\.\d+)?)\s*$')
+PENCE_RE = re.compile(r'(\d{1,3})\s*(?:p|P)\b')
+
+def parse_price_from_text(*texts: str) -> Optional[float]:
+    for t in texts or []:
+        if not t: continue
+        m = PRICE_RE.search(t)
+        if m:
+            try: return float(m.group(1))
+            except Exception: pass
+        if PENCE_RE.search(t): continue
+    return None
+
+_SPLIT_PATTERNS = [
+    re.compile(r"^(?P<name>.+?)\s*[-–—:]\s*(?P<desc>.+)$"),
+    re.compile(r"^(?P<name>.+?)\s*\((?P<desc>[^)]+)\)\s*$"),
+]
+def split_caption_and_inline_notes(text: str) -> Tuple[str, str]:
+    t = (text or "").strip()
+    for p in _SPLIT_PATTERNS:
+        m = p.match(t)
+        if m: return m.group("name").strip(), m.group("desc").strip()
+    return t, ""
+
+# ============================== Learning store ==============================
+
+EXAMPLES_PATH = "examples.jsonl"  # newline-delimited examples
+DEFAULT_RULES = {
+    "modifier_caption_aliases": {
+        "ADD": ["EXTRAS", "ADD-ONS", "GOES WELL WITH", "SIDES"],
+        "CHOOSE PROTEIN": ["PROTEIN CHOICE", "CHOOSE YOUR PROTEIN"]
+    },
+    "force_minmax": {
+        "CHOOSE PROTEIN": {"min": 1, "max": 1},
+        "ADD": {"min": 0, "max": 5}
+    },
+    "option_aliases": {
+        "bbq sauce": ["barbecue", "bbq"],
+        "fries": ["french fries", "chips"]
+    }
+}
+
+def save_example(source_snippet: str, flipdish_piece: dict, tags: List[str]):
+    rec = {
+        "ts": int(time.time()),
+        "source": (source_snippet or "")[:4000],
+        "flipdish": flipdish_piece,
+        "tags": tags or []
+    }
+    try:
+        with open(EXAMPLES_PATH, "a", encoding="utf-8") as f:
+            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
 
 def load_examples() -> List[dict]:
-    path = "examples.jsonl"
-    if not os.path.exists(path):
+    if not os.path.exists(EXAMPLES_PATH):
         return []
     out = []
-    with open(path, "r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                out.append(json.loads(line))
-            except Exception:
-                continue
+    try:
+        with open(EXAMPLES_PATH, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line: continue
+                try: out.append(json.loads(line))
+                except Exception: pass
+    except Exception:
+        return []
     return out
 
+def _tokenize(t): 
+    return re.findall(r"[a-z0-9]+", (t or "").lower())
 
-EXAMPLES_CACHE = load_examples()
+def _bow(text):
+    d = {}
+    for tok in _tokenize(text):
+        d[tok] = d.get(tok, 0) + 1
+    return d
 
+def _cos(a,b):
+    num = sum(a.get(k,0)*b.get(k,0) for k in set(a)|set(b))
+    den = math.sqrt(sum(v*v for v in a.values()))*math.sqrt(sum(v*v for v in b.values()))
+    return num/den if den else 0.0
 
-def top_k_examples(query_text: str, k: int = 3) -> List[dict]:
-    if not EXAMPLES_CACHE:
-        return []
-    q = (query_text or "").lower()
-    def score(ex):
-        src = (ex.get("source", "") or "").lower()
-        fj = json.dumps(ex.get("flipdish", {}), ensure_ascii=False).lower()
-        s = 0
-        for tok in set(re.findall(r"[a-z0-9]+", q)):
-            if tok in src:
-                s += 2
-            if tok in fj:
-                s += 1
-        return s
-    ranked = sorted(EXAMPLES_CACHE, key=score, reverse=True)
-    return [r for r in ranked if score(r) > 0][:k]
-
+def top_k_examples(query_text, k=3):
+    q = _bow(query_text or "")
+    if not q: return []
+    exs = load_examples()
+    scored = []
+    for ex in exs:
+        s = _cos(q, _bow(ex.get("source","")))
+        if s > 0: scored.append((s, ex))
+    scored.sort(reverse=True, key=lambda x: x[0])
+    return [ex for _, ex in scored[:k]]
 
 def build_fewshot_context(query_text: str) -> str:
     shots = top_k_examples(query_text, k=3)
-    if not shots:
-        return ""
+    if not shots: return ""
     lines = []
     for ex in shots:
         lines.append(json.dumps({
-            "source_excerpt": (ex.get("source", "") or "")[:400],
-            "expected_flipdish_piece": ex.get("flipdish", {})
+            "source_excerpt": (ex.get("source","") or "")[:400],
+            "expected_flipdish_piece": ex.get("flipdish",{})
         }, ensure_ascii=False))
     return "\n".join(lines)
 
-
 def try_load_rules() -> dict:
+    # auto-load rules.json from app root if present; otherwise defaults
     path = "rules.json"
     if os.path.exists(path):
         try:
-            with open(path, "r", encoding="utf-8") as f:
+            with open(path, encoding="utf-8") as f:
                 return json.load(f)
         except Exception:
-            pass
-    return {
-        "modifier_caption_aliases": {
-            "ADD ONS": "ADD ONS",
-            "ADD ONS:": "ADD ONS",
-            "EXTRAS": "EXTRAS",
-            "SIDES": "SIDES",
-        },
-        "force_minmax": {},
-        "option_aliases": {}
-    }
+            return DEFAULT_RULES
+    return DEFAULT_RULES
 
-
-# ---------- Prompt for LLM Extraction ----------
+# ============================== Vision extraction ==============================
 
 BASE_EXTRACTION_PROMPT = """
 You output ONLY JSON (no markdown) with this schema:
@@ -231,7 +312,6 @@ You output ONLY JSON (no markdown) with this schema:
   "categories": [
     {
       "caption": string,
-      "description": string,
       "items": [
         {
           "caption": string,
@@ -270,191 +350,176 @@ Detect modifiers from many phrasings:
 - "Add ham +3", "Add chicken or chorizo +4", "Add steak +6"
 - "Choice of toast or pancakes", "Choose from ..."
 - Upgrades: "… (+2 to upgrade …)" as options with price
-- CONDITIONALS: If a choice leads to another selection (e.g., similar to "If Waffles then choose syrup"), attach the follow-up group(s) under that option's "modifiers".
+- CONDITIONALS: If a choice leads to another selection (e.g., size -> sides), attach the follow-up group(s) under that option's "modifiers".
 
 Rules:
 - Item price numeric; ignore currency symbols.
 - Options without explicit price -> price=null.
 - Keep headings with a price as items; ignore decorative section headers.
-- If there is descriptive text directly under a category heading that clearly describes the whole section (not just one item),
-  put that text in the category's "description" field.
-- Do NOT duplicate the same category description into every item.
-- If no category-level description exists, use an empty string "" for "description".
 """
-
 
 def _img_hash(img: Image.Image) -> str:
     return hashlib.blake2b(img.tobytes(), digest_size=16).hexdigest()
 
+@st.cache_data(show_spinner=False, ttl=7*24*3600)
+def _cached_extract_page(img_bytes: bytes, model: str, fewshot: str) -> Dict[str, Any]:
+    im = Image.open(io.BytesIO(img_bytes)).convert("RGB")
+    return _run_openai_single_uncached(im, model=model, fewshot=fewshot)
 
-@st.cache_data(show_spinner=False, ttl=7 * 24 * 3600)
-def _cached_extract_page(img_bytes: bytes, model: str, openai_api_key: str, system_prompt: str) -> dict:
-    """
-    Single-page vision+json extraction.
-    """
-    from openai import OpenAI
-    client = OpenAI(api_key=openai_api_key)
+def run_openai_single(img: Image.Image, model: str = "gpt-4o", fewshot: str = "") -> Dict[str, Any]:
+    buf = io.BytesIO(); img.save(buf, "PNG")
+    return _cached_extract_page(buf.getvalue(), model, fewshot)
 
-    b64 = base64.b64encode(img_bytes).decode("ascii")
-    prompt = system_prompt
+def _run_openai_single_uncached(image: Image.Image, model: str = "gpt-4o", fewshot: str = "") -> Dict[str, Any]:
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key or OpenAI is None:
+        # Minimal offline stub (so UI doesn’t break)
+        return {
+            "name": "Sample",
+            "categories": [{
+                "caption": "brunch",
+                "items": [{
+                    "caption": "Combo Breakfast",
+                    "description": "Choose main; if Waffles then choose syrup",
+                    "price": 28,
+                    "modifiers": [{
+                        "caption": "Choose Main",
+                        "min": 1, "max": 1,
+                        "options": [
+                            {"caption": "Pancakes", "price": None},
+                            {"caption": "Waffles", "price": None, "modifiers": [{
+                                "caption": "Choose Syrup", "min": 1, "max": 1,
+                                "options": [{"caption": "Maple", "price": None}, {"caption": "Chocolate", "price": None}]
+                            }]}
+                        ]
+                    }]
+                }]}
+            ]
+        }
 
+    sys_prompt = BASE_EXTRACTION_PROMPT
+    if fewshot:
+        sys_prompt += "\n\nEXAMPLES (follow this structure and style):\n" + fewshot
+
+    client = OpenAI(api_key=api_key)
     resp = client.chat.completions.create(
         model=model,
-        temperature=0.0,
+        temperature=0,
         response_format={"type": "json_object"},
         messages=[
-            {"role": "system", "content": prompt},
-            {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "input_text",
-                        "text": "Extract Flipdish menu-structure JSON from this page."
-                    },
-                    {
-                        "type": "input_image",
-                        "image_url": {
-                            "url": f"data:image/png;base64,{b64}"
-                        }
-                    }
-                ]
-            }
-        ]
+            {"role": "system", "content": sys_prompt},
+            {"role": "user", "content": [
+                {"type": "text", "text": "Extract menu JSON with explicit and conditional modifiers for this image."},
+                {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{encode_image(image)}"}}
+            ]}
+        ],
     )
-    txt = resp.choices[0].message.content or "{}"
-    try:
-        return json.loads(txt)
-    except Exception:
-        try:
-            start = txt.find("{")
-            end = txt.rfind("}")
-            if start != -1 and end != -1:
-                return json.loads(txt[start:end + 1])
-        except Exception:
-            pass
-    return {"categories": []}
+    return json.loads(resp.choices[0].message.content)
 
+# ============================== PDF helpers (optional images) ==============================
 
-def raster_pdf_to_images(file: bytes, max_pages: int = 30) -> List[Image.Image]:
+def find_item_rects(page: "fitz.Page", name_clean: str) -> List["fitz.Rect"]:
+    if fitz is None or not name_clean.strip():
+        return []
+    r = page.search_for(name_clean)
+    if r: return r
+    toks = name_clean.split()
+    for n in (3, 2, 1):
+        if len(toks) >= n:
+            r = page.search_for(" ".join(toks[:n]))
+            if r: return r
+    return []
+
+def nearest_image_crop(page: "fitz.Page", near: "fitz.Rect", margin: float = 12.0) -> Optional[bytes]:
     if fitz is None:
-        return []
-    pdf = fitz.open(stream=file, filetype="pdf")
-    pages = []
-    for i, page in enumerate(pdf):
-        if i >= max_pages:
-            break
-        zoom = 300 / 72.0
-        mat = fitz.Matrix(zoom, zoom)
-        pix = page.get_pixmap(matrix=mat, alpha=False)
-        img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
-        pages.append(img)
-    return pages
-
-
-def nearest_image_crop(page, rect, max_search=3) -> Optional[bytes]:
-    try:
-        ir = page.get_images(full=True)
-    except Exception:
         return None
-    x0, y0, x1, y1 = rect
-    center_y = (y0 + y1) / 2.0
-    best = None
-    best_dy = None
-    for (xref, _, _, _, _, _, _, _) in ir[:100]:
-        try:
-            bbox = page.get_image_rects(xref)[0]
-        except Exception:
-            continue
-        ix0, iy0, ix1, iy1 = bbox
-        if ix1 < x0 or ix0 > x1:
-            continue
-        cy = (iy0 + iy1) / 2.0
-        dy = abs(cy - center_y)
-        if best_dy is None or dy < best_dy:
-            best_dy = dy
-            best = bbox
-    if best is None or best_dy is None or best_dy > max_search * 20:
+    layout = page.get_text("dict")
+    imgs = []
+    for b in layout.get("blocks", []):
+        if b.get("type") == 1 and "bbox" in b:
+            x0, y0, x1, y1 = b["bbox"]
+            imgs.append(fitz.Rect(x0, y0, x1, y1))
+    if not imgs:
         return None
-    ix0, iy0, ix1, iy1 = best
-    rect = fitz.Rect(ix0, iy0, ix1, iy1)
-    try:
-        pix = page.get_pixmap(clip=rect, alpha=False)
-        return pix.tobytes("png")
-    except Exception:
-        return None
+    best, best_d = None, 1e9
+    for ir in imgs:
+        ay = (near.y0 + near.y1) / 2
+        iy = (ir.y0 + ir.y1) / 2
+        d = abs(ay - iy)
+        if d < best_d:
+            best, best_d = ir, d
+    if not best: return None
+    clip = fitz.Rect(best.x0 - margin, best.y0 - margin, best.x1 + margin, best.y1 + margin)
+    pix = page.get_pixmap(clip=clip, dpi=300)
+    return pix.tobytes("png")
 
+# ============================== Regex fallback for missed modifiers ==============================
 
-def find_item_rects(page, name: str) -> List[Tuple[float, float, float, float]]:
-    rects = []
-    try:
-        words = page.get_text("words")
-    except Exception:
-        return rects
-    tokens = name.split()
-    if not tokens:
-        return rects
-    first = tokens[0].lower()
-    for (x0, y0, x1, y1, w, b, i, n) in words:
-        if w.lower() == first:
-            rects.append((x0, y0, x1, y1))
-    return rects
+MODIFIER_HEADERS = [
+    r"goes\s+well\s+with", r"goes\s+with", r"add[-\s]*ons?", r"addons?", r"extras?",
+]
+MODIFIER_HEADER_RE = re.compile(r"(?i)\b(" + "|".join(MODIFIER_HEADERS) + r")\b[:\s]*")
+PLUS_PRICE_LINE = re.compile(r'(?i)^(?P<name>.*?\S)\s*(?:\+|plus\s*)(?P<price>\d+(?:\.\d+)?)\s*$')
+ADD_PATTERN = re.compile(r"(?i)\badd\s+(?P<opts>[^.;\n/]+?)\s*(?:\+\s*(?P<price>\d+(?:\.\d+)?))(?=[\s\).,;/]|$)")
+CHOICE_PATTERN = re.compile(r"(?i)\b(choice\s+of|choose\s+from|comes\s+with\s+choice\s+of)\s+(?P<opts>[^.;\n/]+)")
 
+def split_option_list(s: str) -> List[str]:
+    parts = re.split(r"\s*(?:or|and|/|,|\+)\s*", s.strip(), flags=re.IGNORECASE)
+    return [p.strip(" -–—:()") for p in parts if p.strip(" -–—:()")]
 
-# ---------- Fallback Modifiers ----------
+def fallback_extract_modifiers(text: str) -> List[Dict[str, Any]]:
+    if not text: return []
+    groups: Dict[str, List[Tuple[str, Optional[float]]]] = {}
 
-def fallback_extract_modifiers(text: str) -> List[dict]:
-    if not text:
-        return []
-    lines = [l.strip() for l in text.splitlines() if l.strip()]
-    groups = []
-    current = None
+    for m in MODIFIER_HEADER_RE.finditer(text):
+        gcap = m.group(1).upper().strip()
+        rest = text[m.end():]
+        seg = re.split(r"(?:(?:\.\s)|\n{1,2})", rest, maxsplit=1)[0]
+        tokens = re.split(r"[,\n;•/]+", seg)
+        for tk in tokens:
+            t = tk.strip()
+            if not t: continue
+            if t.isupper() and len(t.split()) <= 5 and not PRICE_RE.search(t):
+                break
+            pm = PLUS_PRICE_LINE.match(t)
+            if pm:
+                groups.setdefault(gcap, []).append((pm.group("name").strip(" -–—:"), float(pm.group("price"))))
+            else:
+                groups.setdefault(gcap, []).append((t.strip(" -–—:"), None))
 
-    def flush():
-        nonlocal current
-        if current and current.get("options"):
-            groups.append(current)
-        current = None
+    for m in ADD_PATTERN.finditer(text):
+        names = split_option_list(m.group("opts"))
+        price = float(m.group("price")) if m.group("price") else None
+        if names:
+            groups.setdefault("ADD", [])
+            for n in names:
+                groups["ADD"].append((n, price))
 
-    for line in lines:
-        m = re.match(r"^(add|extra|choice of|choose|choose from)\b[:\-\s]*(.*)$", line, re.I)
-        if m:
-            flush()
-            caption = m.group(0).strip().rstrip(":")
-            current = {
-                "caption": smart_title(caption),
-                "min": None,
-                "max": None,
-                "options": []
-            }
-            rest = m.group(2).strip()
-            if rest:
-                parts = re.split(r",|\bor\b|\band\b", rest)
-                for p in parts:
-                    p = p.strip()
-                    if not p:
-                        continue
-                    price = parse_price_from_text(p)
-                    name = re.sub(r"[-+]?\\s*\\d+(\\.\\d{1,2})?", "", p).strip()
-                    current["options"].append({
-                        "caption": smart_title(name),
-                        "price": price
-                    })
-            continue
-
-        pm = re.match(r"^(.+?)\\s*[+](\\d+(?:\\.\\d{1,2})?)$", line)
+    for line in re.split(r"[.;\n]+", text):
+        pm = PLUS_PRICE_LINE.match(line.strip())
         if pm:
-            if not current:
-                current = {"caption": "Add Ons", "min": None, "max": None, "options": []}
-            name = smart_title(pm.group(1).strip())
-            price = float(pm.group(2))
-            current["options"].append({"caption": name, "price": price})
-            continue
+            groups.setdefault("ADD", []).append((pm.group("name").strip(" -–—:"), float(pm.group("price"))))
 
-    flush()
-    return groups
+    for m in CHOICE_PATTERN.finditer(text):
+        names = split_option_list(m.group("opts"))
+        if names:
+            groups.setdefault("CHOICE OF", [])
+            for n in names:
+                groups["CHOICE OF"].append((n, 0.0))
 
+    out = []
+    for cap, items in groups.items():
+        seen, opts = set(), []
+        for n, p in items:
+            key = (n.lower(), p if p is not None else -1)
+            if key in seen: continue
+            seen.add(key)
+            opts.append({"caption": n, "price": p})
+        if opts:
+            out.append({"caption": cap, "min": None, "max": None, "options": opts})
+    return out
 
-# ---------- JSON → Flipdish ----------
+# ============================== Flipdish builder (conditional modifiers) ==============================
 
 def to_flipdish_json(
     extracted_pages: List[Dict[str, Any]],
@@ -481,10 +546,7 @@ def to_flipdish_json(
 
     modifiers_index: Dict[str, Dict[str, Any]] = {}
 
-    def ensure_group(caption: str,
-                     min_sel: Optional[int] = None,
-                     max_sel: Optional[int] = None,
-                     can_repeat: Optional[bool] = None) -> Dict[str, Any]:
+    def ensure_group(caption: str, min_sel: Optional[int] = None, max_sel: Optional[int] = None, can_repeat: Optional[bool] = None) -> Dict[str, Any]:
         key_raw = caption or "ADD"
         key = key_raw.strip().upper()
         nowh = now_iso_hms()
@@ -493,15 +555,13 @@ def to_flipdish_json(
         g = {
             "etag": f"W/\"datetime'{nowz}'\"",
             "timestamp": nowh,
-            "canSameItemBeSelectedMultipleTimes": (
-                True if can_repeat is None else bool(can_repeat)
-            ),
+            "canSameItemBeSelectedMultipleTimes": True if can_repeat is None else bool(can_repeat),
             "caption": smart_title(key_raw if key_raw else "ADD"),
             "enabled": True,
             "hiddenInOrderFlow": False,
             "id": guid(),
-            "max": 1 if max_sel is None else max_sel,
-            "min": 0 if min_sel is None else min_sel,
+            "max": 1 if max_sel is None else int(max_sel),
+            "min": 0 if min_sel is None else int(min_sel),
             "position": len(modifiers_index),
             "items": [],
             "overrides": []
@@ -510,9 +570,7 @@ def to_flipdish_json(
         modifiers_index[key] = g
         return g
 
-    def _ensure_option_item(group: Dict[str, Any],
-                            oname: str,
-                            price: Optional[float]) -> Dict[str, Any]:
+    def _ensure_option_item(group: Dict[str, Any], oname: str, price: Optional[float]) -> Dict[str, Any]:
         key_nm = oname.lower() + "|" + str(price if price is not None else -1)
         if key_nm in group["_items_map"]:
             return group["_items_map"][key_nm]
@@ -541,17 +599,29 @@ def to_flipdish_json(
         group["_items_map"][key_nm] = opt_item
         return opt_item
 
-    def _process_group(parent_entity: Dict[str, Any],
-                       grp: Dict[str, Any]):
-        cap = (grp.get("caption") or "Add Ons").strip()
-        min_sel = grp.get("min")
-        max_sel = grp.get("max")
-        opts = grp.get("options") or []
-        group = ensure_group(cap, min_sel, max_sel)
-        for opt in opts:
+    def _link_group_to_parent(parent_entity: Dict[str, Any], group_obj: Dict[str, Any]) -> None:
+        parent_entity.setdefault("modifierMembers", [])
+        parent_entity["modifierMembers"].append({
+            "etag": f"W/\"datetime'{nowz}'\"",
+            "timestamp": now_iso_hms(),
+            "canSameItemBeSelectedMultipleTimes": group_obj.get("canSameItemBeSelectedMultipleTimes", True),
+            "caption": group_obj["caption"],
+            "id": guid(),
+            "max": group_obj["max"],
+            "min": group_obj["min"],
+            "modifierId": group_obj["id"]
+        })
+
+    def _process_group(parent_entity: Dict[str, Any], grp: Dict[str, Any]) -> None:
+        if not grp: return
+        g_caption = smart_title(grp.get("caption") or "ADD")
+        g_min = grp.get("min"); g_max = grp.get("max")
+        can_repeat = grp.get("canSameItemBeSelectedMultipleTimes")
+        group = ensure_group(g_caption, g_min, g_max, can_repeat)
+
+        for opt in (grp.get("options") or []):
             oname = smart_title((opt.get("caption") or "").strip())
-            if not oname:
-                continue
+            if not oname: continue
             price = opt.get("price")
             opt_item = _ensure_option_item(group, oname, price)
             for child_grp in (opt.get("modifiers") or []):
@@ -559,36 +629,13 @@ def to_flipdish_json(
 
         _link_group_to_parent(parent_entity, group)
 
-    def _link_group_to_parent(parent_entity: Dict[str, Any],
-                              group: Dict[str, Any]):
-        mems = parent_entity.setdefault("modifierMembers", [])
-        group_id = group["id"]
-        for m in mems:
-            if m.get("modifierGroupId") == group_id:
-                return
-        mems.append({
-            "enabled": True,
-            "id": guid(),
-            "modifierGroupId": group_id,
-            "position": len(mems),
-        })
-
     cat_index: Dict[str, Any] = {}
 
     for page_i, data in enumerate(extracted_pages):
-        # For this page, decide if we can use it to crop images
-        page = src_pdf_doc[page_i] if (attach_pdf_images and src_pdf_doc is not None) else None
-
         for cat_in in (data.get("categories") or []):
             cat_caption_raw = (cat_in.get("caption") or "Category").strip()
             cat_caption = smart_title(cat_caption_raw).upper()
             ck = cat_caption.lower()
-
-            # Category-level description / notes from extraction or existing JSON
-            cat_desc = (cat_in.get("description") or "").strip()
-            cat_notes_in = (cat_in.get("notes") or "").strip()
-            cat_notes_val = cat_desc or cat_notes_in
-
             if ck not in cat_index:
                 cat = {
                     "etag": f"W/\"datetime'{nowz}'\"",
@@ -599,25 +646,17 @@ def to_flipdish_json(
                     "items": [],
                     "overrides": []
                 }
-
-                # Attach category description as Flipdish notes (if present)
-                if cat_notes_val:
-                    cat["notes"] = cat_notes_val
-
                 colors = pick_category_colors(cat_caption_raw)
                 if colors:
                     cat["backgroundColor"] = colors["backgroundColor"]
                     cat["foregroundColor"] = colors["foregroundColor"]
-
                 out["categories"].append(cat)
                 cat_index[ck] = cat
             else:
                 cat = cat_index[ck]
-                # If we later see a description for an already-seen category and it has no notes yet, fill it once.
-                if cat_notes_val and not cat.get("notes"):
-                    cat["notes"] = cat_notes_val
 
-            # ---- Items for this category ----
+            page = src_pdf_doc[page_i] if (attach_pdf_images and src_pdf_doc is not None) else None
+
             for it in (cat_in.get("items") or []):
                 raw = (it.get("caption") or "").strip()
                 desc = (it.get("description") or "").strip()
@@ -634,8 +673,7 @@ def to_flipdish_json(
                     rects = find_item_rects(page, name)
                     if rects:
                         png = nearest_image_crop(page, rects[0])
-                        if png:
-                            img_data_url = to_data_url(png)
+                        if png: img_data_url = to_data_url(png)
 
                 item = {
                     "etag": f"W/\"datetime'{nowz}'\"",
@@ -683,7 +721,6 @@ def to_flipdish_json(
 
     return out
 
-
 def normalize_with_rules(flipdish_json: dict, rules: dict) -> dict:
     aliases = rules.get("modifier_caption_aliases", {})
     force = rules.get("force_minmax", {})
@@ -691,148 +728,106 @@ def normalize_with_rules(flipdish_json: dict, rules: dict) -> dict:
 
     def canon_mod_name(name):
         n = (name or "").strip().upper()
-        return aliases.get(n, n)
+        for target, alist in aliases.items():
+            if n == target or n in [a.upper() for a in alist]:
+                return target
+        return n or "ADD"
 
     for g in flipdish_json.get("modifiers", []):
-        n0 = g.get("caption")
-        n1 = canon_mod_name(n0)
-        g["caption"] = smart_title(n1)
-        if n1 in force:
-            fm = force[n1]
-            g["min"] = fm.get("min", g.get("min"))
-            g["max"] = fm.get("max", g.get("max"))
+        g["caption"] = canon_mod_name(g.get("caption"))
+        if g["caption"] in force:
+            mm = force[g["caption"]]
+            if "min" in mm: g["min"] = int(mm["min"])
+            if "max" in mm: g["max"] = int(mm["max"])
         for it in g.get("items", []):
-            for pp in it.get("pricingProfiles", []):
-                for fld in ["collectionPrice", "deliveryPrice", "dineInPrice", "takeawayPrice"]:
-                    v = pp.get(fld)
-                    try:
-                        pp[fld] = float(v)
-                    except Exception:
-                        pp[fld] = 0.0
-            for mm in it.get("modifierMembers", []):
-                pass
-            for ch in it.get("charges", []):
-                pass
-
-    for cat in flipdish_json.get("categories", []):
-        for item in cat.get("items", []):
-            for mm in item.get("modifierMembers", []):
-                pass
-            for ch in item.get("charges", []):
-                pass
-
+            label = (it.get("caption","") or "").strip().lower()
+            for canon, alist in opt_alias.items():
+                if label in [canon] + alist:
+                    it["caption"] = canon.title()
     return flipdish_json
 
+# ============================== Streamlit UI (minimal) ==============================
 
-# ---------- Streamlit UI ----------
+tab1, tab2 = st.tabs(["PDF/Image → JSON", "Transform existing JSON"])
 
-def main():
-    st.title("Flipdish Menu Builder")
+if "last_pdf_text" not in st.session_state:
+    st.session_state.last_pdf_text = []
 
-    openai_api_key = st.text_input("OpenAI API Key", type="password")
-    model = st.text_input("Model name", value="gpt-4.1-mini")
-    price_band_id = st.text_input("Price Band ID", value="")
-    attach_pdf_images = st.checkbox("Attach images from PDF near items", value=False)
+with tab1:
+    f = st.file_uploader("Upload menu (PNG, JPG, JPEG, or PDF)", type=["png", "jpg", "jpeg", "pdf"])
+    menu_name = st.text_input("Menu name", value="Generated Menu")
+    price_band_id = st.text_input("Flipdish Price Band ID (required)", value="")
+    attach_images = st.checkbox("Attach cropped item images (PDF only)", value=True)
+    model = st.selectbox("Model", ["gpt-4o", "gpt-4o-mini"], index=0)
 
-    tab1, tab2 = st.tabs(["PDF / Image → Flipdish JSON", "Transform existing JSON"])
+    if st.button("Extract and Build JSON"):
+        if not price_band_id.strip():
+            st.error("Price Band ID is required."); st.stop()
 
-    with tab1:
-        uploaded = st.file_uploader("Upload menu PDF or image(s)", type=["pdf", "png", "jpg", "jpeg"], accept_multiple_files=False)
-        menu_name = st.text_input("Menu Name (optional)", "")
-        if st.button("Generate JSON", disabled=not uploaded or not openai_api_key or not price_band_id):
-            if not uploaded:
-                st.error("Upload a file.")
-                st.stop()
-            if not openai_api_key:
-                st.error("OpenAI API key required.")
-                st.stop()
-            if not price_band_id.strip():
-                st.error("Price Band ID is required.")
-                st.stop()
+        loaded = load_file(f)
+        if not loaded.images:
+            st.error("Please upload a valid image or PDF."); st.stop()
 
-            bytes_data = uploaded.read()
-            images = []
-            src_pdf_doc = None
-            if uploaded.type == "application/pdf":
-                if fitz is None:
-                    st.error("PyMuPDF not installed on server.")
-                    st.stop()
-                src_pdf_doc = fitz.open(stream=bytes_data, filetype="pdf")
-                images = raster_pdf_to_images(bytes_data)
-            else:
-                try:
-                    img = Image.open(io.BytesIO(bytes_data)).convert("RGB")
-                    images = [img]
-                except Exception as e:
-                    st.error(f"Failed to read image: {e}")
-                    st.stop()
+        extracted_pages, per_page_text = [], []
+        with st.spinner("Extracting..."):
+            for i, im in enumerate(loaded.images):
+                page_text = ""
+                if loaded.is_pdf and loaded.doc is not None and fitz is not None:
+                    try: page_text = loaded.doc[i].get_text("text") or ""
+                    except Exception: page_text = ""
+                fewshot = build_fewshot_context(page_text or menu_name)
+                extracted = run_openai_single(im, model=model, fewshot=fewshot)
+                extracted_pages.append(extracted)
+                per_page_text.append(page_text)
 
-            fewshot = build_fewshot_context(uploaded.name)
-            system_prompt = BASE_EXTRACTION_PROMPT + ("\nFew-shot examples:\n" + fewshot if fewshot else "")
+        result = to_flipdish_json(
+            extracted_pages,
+            menu_name,
+            price_band_id.strip(),
+            attach_images and loaded.is_pdf,
+            loaded.doc if (loaded.is_pdf and fitz is not None) else None,
+            rules=None  # auto-load rules.json silently
+        )
 
-            pages_data = []
-            for img in images:
-                buf = io.BytesIO()
-                img.save(buf, format="PNG")
-                page_json = _cached_extract_page(buf.getvalue(), model, openai_api_key, system_prompt)
-                pages_data.append(page_json)
+        # Silent learning: save a few exemplars
+        try:
+            src_text = (per_page_text[0] if per_page_text else menu_name) or ""
+            first_page = extracted_pages[0] if extracted_pages else {"categories": []}
+            saved = 0
+            for cat in (first_page.get("categories") or [])[:2]:
+                for it in (cat.get("items") or [])[:3]:
+                    save_example(src_text, {"category": cat.get("caption"), "item": it}, tags=["auto"])
+                    saved += 1
+        except Exception:
+            pass
 
-            result = to_flipdish_json(
-                pages_data,
-                menu_name or uploaded.name,
-                price_band_id.strip(),
-                attach_pdf_images,
-                src_pdf_doc,
-                rules=None,
-            )
+        st.success("Flipdish JSON created")
+        st.json(result, expanded=False)
+        st.download_button(
+            "Download Flipdish JSON",
+            data=json.dumps(result, indent=2, ensure_ascii=False).encode(),
+            file_name="flipdish_menu.json",
+            mime="application/json"
+        )
 
-            st.success("Flipdish JSON generated")
-            st.json(result, expanded=False)
-            st.download_button(
-                "Download JSON",
-                data=json.dumps(result, indent=2, ensure_ascii=False).encode(),
-                file_name="flipdish_menu.json",
-                mime="application/json"
-            )
+with tab2:
+    jf = st.file_uploader("Upload existing JSON to re-shape", type=["json"], key="json_in")
+    menu_name2 = st.text_input("Override name", key="mn2")
+    price_band_id2 = st.text_input("Price Band ID", key="pb2")
 
-    with tab2:
-        st.write("Upload an existing JSON (any structure) and we will reshape into Flipdish schema.")
-        jf = st.file_uploader("Upload JSON", type=["json"], key="json_upload")
-        menu_name2 = st.text_input("Menu Name override (optional)", key="menu2")
-        price_band_id2 = st.text_input("Price Band ID (required)", key="pb2")
-        if st.button("Transform JSON", disabled=not jf or not price_band_id2):
-            if not jf:
-                st.error("Upload a JSON file first.")
-                st.stop()
-            if not price_band_id2.strip():
-                st.error("Price Band ID is required.")
-                st.stop()
-            raw = json.load(io.BytesIO(jf.read()))
-            # For transform mode we treat uploaded JSON as extracted_pages-style list
-            # or single object with categories.
-            if isinstance(raw, dict) and "categories" in raw:
-                pages_data = [raw]
-            elif isinstance(raw, list):
-                pages_data = raw
-            else:
-                pages_data = [{"categories": raw.get("categories", [])}] if isinstance(raw, dict) else []
-            result = to_flipdish_json(
-                pages_data,
-                menu_name2 or "Transformed Menu",
-                price_band_id2.strip(),
-                False,
-                None,
-                rules=None
-            )
-            st.success("Re-shaped successfully")
-            st.json(result, expanded=False)
-            st.download_button(
-                "Download JSON",
-                data=json.dumps(result, indent=2, ensure_ascii=False).encode(),
-                file_name="flipdish_menu.json",
-                mime="application/json"
-            )
+    if st.button("Transform", key="btn2"):
+        if not jf:
+            st.error("Upload a JSON file first."); st.stop()
+        if not price_band_id2.strip():
+            st.error("Price Band ID is required."); st.stop()
 
-
-if __name__ == "__main__":
-    main()
+        raw = json.load(io.BytesIO(jf.read()))
+        result = to_flipdish_json([raw], menu_name2 or "", price_band_id2.strip(), False, None, rules=None)
+        st.success("Re-shaped successfully")
+        st.json(result, expanded=False)
+        st.download_button(
+            "Download JSON",
+            data=json.dumps(result, indent=2, ensure_ascii=False).encode(),
+            file_name="flipdish_menu.json",
+            mime="application/json"
+        )

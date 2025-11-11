@@ -114,55 +114,52 @@ SMALL_WORDS = {
     "via", "with", "over", "under", "up", "down", "off"
 }
 
-# --- MODIFICATION: Split allergens into two groups based on user's screenshot ---
-
-# Group 1: Official Flipdish tags for paramsJson (from screenshot)
-FLIPDISH_OFFICIAL_ALLERGENS = {
+# --- MODIFICATION: Added Spice, Vegan, Vegetarian, Halal, etc. ---
+FLIPDISH_ALLERGENS = {
+    # Allergens
     "celery": "Celery",
     "crustacean": "Crustaceans",
     "crustaceans": "Crustaceans",
     "egg": "Egg",
     "eggs": "Egg",
     "fish": "Fish",
-    "gluten": "Gluten", # Note: "Gluten Free" is separate
+    "gluten": "Gluten",
+    "gluten-free": "Gluten Free",
+    "gluten free": "Gluten Free",
+    "(gf)": "Gluten Free",
     "lupin": "Lupin",
     "milk": "Milk",
-    "lactose": "Milk", # Common alias
-    "dairy": "Milk",   # Common alias
+    "lactose": "Milk",
+    "dairy": "Milk",
     "mollusc": "Molluscs",
     "molluscs": "Molluscs",
     "mustard": "Mustard",
-    "nut": "Nuts",     # Covers various nuts
+    "nut": "Nuts",
     "nuts": "Nuts",
     "peanut": "Peanuts",
     "peanuts": "Peanuts",
     "sesame": "Sesame",
     "soya": "Soya",
-    "soy": "Soya",     # Common alias
+    "soy": "Soya",
     "soybean": "Soybeans",
     "soybeans": "Soybeans",
     "sulphur": "Sulphur Dioxide",
     "sulphur dioxide": "Sulphur Dioxide",
     "sulphites": "Sulphur Dioxide",
     "wheat": "Wheat",
+    
+    # Dietary / Other
     "alcohol": "Alcohol",
-    "(alc)": "Alcohol"
-}
-FLIPDISH_OFFICIAL_LIST = sorted(list(set(FLIPDISH_OFFICIAL_ALLERGENS.values())))
-
-# Group 2: Other tags for user-facing description (notes field)
-OTHER_DIETARY_TAGS = {
-    "gluten-free": "Gluten Free",
-    "gluten free": "Gluten Free",
-    "(gf)": "Gluten Free",
+    "(alc)": "Alcohol",
     "vegan": "Vegan",
     "(ve)": "Vegan",
-    "(v)": "Vegan", # From Birch Tree menu
     "vegetarian": "Vegetarian",
-    "(vg)": "Vegetarian", # From Birch Tree menu
+    "(v)": "Vegetarian",
     "halal": "Halal",
     "(h)": "Halal",
-    "spicy": "Spicy", # General spicy
+    
+    # Spice Levels
+    "spicy": "Mild Spice",
     "mild": "Mild Spice",
     "mild spice": "Mild Spice",
     "medium": "Medium Spice",
@@ -171,10 +168,7 @@ OTHER_DIETARY_TAGS = {
     "hot spice": "Hot Spice",
     "extra hot": "Hot Spice"
 }
-OTHER_DIETARY_LIST = sorted(list(set(OTHER_DIETARY_TAGS.values())))
-
-# Combined dictionary for text scanning
-ALL_DIETARY_KEYWORDS = {**FLIPDISH_OFFICIAL_ALLERGENS, **OTHER_DIETARY_TAGS}
+FLIPDISH_ALLERGEN_LIST = sorted(list(set(FLIPDISH_ALLERGENS.values())))
 # --- END MODIFICATION ---
 
 
@@ -193,37 +187,53 @@ def smart_title(text: str) -> str:
             result.append(t); continue
         lower = t.lower()
         
+        # --- MODIFICATION ---
+        # Removed the `if t.isupper()...` check to force capitalization
+        # rules on all words, even if they were originally uppercase.
         base = _cap_hyphenated(lower)
         if (word_index == 0 or word_index == len(words_only) - 1 or lower not in SMALL_WORDS):
             out = base[0].upper() + base[1:] if base else base
         else:
             out = base.lower()
+        # --- END MODIFICATION ---
 
         result.append(out); word_index += 1
     
+    # --- NEW MODIFICATION: Replace 'and' with '&' for titles ---
     final_string = "".join(result)
     final_string = final_string.replace(" and ", " & ")
-    final_string = final_string.replace(" And ", " & ")
+    final_string = final_string.replace(" And ", " & ") # In case 'and' was capitalized (e.g. first word)
     return final_string
+    # --- END NEW MODIFICATION ---
 
+# --- MODIFICATION: Updated rules to be more flexible (use \b word boundaries) ---
 CATEGORY_COLOR_RULES = [
+    # More specific compound rules first
     (re.compile(r"\b(soup|soups)\b.*\b(salad|salads)\b", re.I), "#2E8B57"),
     (re.compile(r"\b(wine|wines)\b.*\b(spirit|spirits)\b", re.I), "#2C3E50"),
+
+    # Standard categories
     (re.compile(r"\b(starter|starters)\b", re.I), "#E67E22"),
     (re.compile(r"\b(main|mains)\b", re.I), "#C0392B"),
     (re.compile(r"\b(side|sides)\b", re.I), "#FBC02D"),
     (re.compile(r"\b(soup|soups)\b", re.I), "#2E8B57"),
     (re.compile(r"\b(salad|salads)\b", re.I), "#2E8B57"),
     (re.compile(r"\b(dessert|desserts)\b", re.I), "#8E44AD"),
+    
+    # Flexible "drinks" rule as requested
     (re.compile(r"\b(beverage|beverages|drink|drinks)\b", re.I), "#9b9b9b"),
+    
+    # --- MODIFICATION: Expanded "specials" rule to catch deals/offers ---
     (re.compile(r"\b(special|specials|offer|offers|deal|deals|bundle)\b", re.I), "#FF66B2"),
-    (re.compile(r"\b(kid|kids)\b", re.I), "#3498DB"),
+    
+    (re.compile(r"\b(kid|kids)\b", re.I), "#3498DB"), # Matches "Kids Menu", "For the Kids"
     (re.compile(r"\b(pizza|pizzas)\b", re.I), "#D64541"),
     (re.compile(r"\b(burger|burgers)\b", re.I), "#935116"),
     (re.compile(r"\b(sauce|sauces)\b", re.I), "#FFDAB9"),
     (re.compile(r"\b(wine|wines)\b", re.I), "#2C3E50"),
     (re.compile(r"\b(spirit|spirits)\b", re.I), "#2C3E50"),
 ]
+# --- END MODIFICATION ---
 
 def _hex_to_rgb(hex_color: str) -> Tuple[int, int, int]:
     h = hex_color.lstrip("#")
@@ -236,6 +246,7 @@ def _relative_luminance(rgb: Tuple[int, int, int]) -> float:
     r, g, b = (_lin(v) for v in rgb)
     return 0.2126*r + 0.7152*g + 0.0722*b
 
+# --- MODIFICATION: Changed .match() to .search() to find keywords anywhere ---
 def pick_category_colors(caption: str) -> Optional[Dict[str, str]]:
     if not caption: return None
     norm = caption.strip()
@@ -243,8 +254,11 @@ def pick_category_colors(caption: str) -> Optional[Dict[str, str]]:
         if pat.search(norm): # Use .search() instead of .match()
             fg = "#FFFFFF" if _relative_luminance(_hex_to_rgb(bg)) < 0.5 else "#000000"
             return {"backgroundColor": bg, "foregroundColor": fg}
+    # The second loop on 'joined' is no longer needed
     return None
+# --- END MODIFICATION ---
 
+# --- NEW FUNCTION ---
 def format_description(text: str) -> str:
     """
     Cleans up description text:
@@ -257,17 +271,22 @@ def format_description(text: str) -> str:
     if not text:
         return ""
     
+    # Replace & with and
     text = text.replace("&", "and")
     
+    # Ensure it ends with a punctuation mark
     if text and text[-1] not in ".!?":
         text += "."
         
+    # Capitalize the very first letter
     if text:
         text = text[0].upper() + text[1:]
     
+    # Capitalize letters after a period (e.g. "Sentence one. sentence two.")
     text = re.sub(r'(?<=\.\s)(\w)', lambda m: m.group(1).upper(), text)
     
     return text
+# --- END NEW FUNCTION ---
 
 # ============================== Price parsing ==============================
 
@@ -391,7 +410,7 @@ def try_load_rules() -> dict:
 
 # ============================== Vision extraction ==============================
 
-# --- MODIFICATION: Split dietary_tags into official_allergens and other_dietary_tags ---
+# --- MODIFICATION: Added "dietary_tags" to schema and rules ---
 BASE_EXTRACTION_PROMPT = f"""
 You output ONLY JSON (no markdown) with this schema:
 
@@ -407,8 +426,7 @@ You output ONLY JSON (no markdown) with this schema:
           "description": string,
           "notes": string,
           "price": number,
-          "official_allergens": [string],
-          "other_dietary_tags": [string],
+          "dietary_tags": [string],
           "modifiers": [
             {{
               "caption": string,
@@ -448,9 +466,8 @@ Rules:
 - Options without explicit price -> price=null.
 - Keep headings with a price as items; ignore decorative section headers.
 - **Special Offers:** If you find any deals, bundles, or special offers (e.g., "Family Meal," "Lunch Special," "2-for-1 Deal"), group them as items under a new category named "Special Offers".
-- **Allergens & Dietary:** Look for text, logos, or symbols (e.g., (G), (N), (Ve), (H), (Alc), spicy).
-- Populate `official_allergens` ONLY with tags from this list: {json.dumps(FLIPDISH_OFFICIAL_LIST)}
-- Populate `other_dietary_tags` with tags like "Vegan", "Vegetarian", "Halal", "Gluten Free", or spice levels from this list: {json.dumps(OTHER_DIETARY_LIST)}
+- **Allergens & Dietary:** Look at item descriptions for text, logos, or symbols (e.g., (G), (N), (Ve), (H), (Alc), spicy) indicating allergens, alcohol, Vegan, Vegetarian, Halal, or Spice Levels. Populate `dietary_tags` with an array of strings.
+- **IMPORTANT:** Only use tag names from this EXACT list: {json.dumps(FLIPDISH_ALLERGEN_LIST)}
 """
 # --- END MODIFICATION ---
 
@@ -479,8 +496,7 @@ def _run_openai_single_uncached(image: Image.Image, model: str = "gpt-4o", fewsh
                     "caption": "Combo Breakfast",
                     "description": "Choose main; if Waffles then choose syrup. (V), (Contains Gluten, Egg, Milk)",
                     "price": 28,
-                    "official_allergens": ["Gluten", "Egg", "Milk"],
-                    "other_dietary_tags": ["Vegetarian"],
+                    "dietary_tags": ["Gluten", "Egg", "Milk", "Vegetarian"],
                     "modifiers": [{
                         "caption": "Choose Main",
                         "min": 1, "max": 1,
@@ -647,8 +663,9 @@ def to_flipdish_json(
 
     def ensure_group(caption: str, min_sel: Optional[int] = None, max_sel: Optional[int] = None, can_repeat: Optional[bool] = None) -> Dict[str, Any]:
         key_raw = caption or "ADD"
+        # MODIFICATION: We apply smart_title directly here, *before* uppercasing for the key
         caption_smart = smart_title(key_raw if key_raw else "ADD")
-        key = caption_smart.strip().upper() 
+        key = caption_smart.strip().upper() # Use the smart-titled version for the key as well
         
         nowh = now_iso_hms()
         if key in modifiers_index:
@@ -657,7 +674,7 @@ def to_flipdish_json(
             "etag": f"W/\"datetime'{nowz}'\"",
             "timestamp": nowh,
             "canSameItemBeSelectedMultipleTimes": True if can_repeat is None else bool(can_repeat),
-            "caption": caption_smart, 
+            "caption": caption_smart, # Use the smart-titled caption
             "enabled": True,
             "hiddenInOrderFlow": False,
             "id": guid(),
@@ -680,7 +697,7 @@ def to_flipdish_json(
             "etag": f"W/\"datetime'{nowz}'\"",
             "timestamp": nowh,
             "autoSelectedQuantity": 0,
-            "caption": oname, 
+            "caption": oname, # oname is already smart-titled
             "doesPriceRepresentRewardPoints": False,
             "enabled": True,
             "id": guid(),
@@ -706,7 +723,7 @@ def to_flipdish_json(
             "etag": f"W/\"datetime'{nowz}'\"",
             "timestamp": now_iso_hms(),
             "canSameItemBeSelectedMultipleTimes": group_obj.get("canSameItemBeSelectedMultipleTimes", True),
-            "caption": group_obj["caption"], 
+            "caption": group_obj["caption"], # This will be the smart-titled caption
             "id": guid(),
             "max": group_obj["max"],
             "min": group_obj["min"],
@@ -715,13 +732,13 @@ def to_flipdish_json(
 
     def _process_group(parent_entity: Dict[str, Any], grp: Dict[str, Any]) -> None:
         if not grp: return
-        g_caption = (grp.get("caption") or "ADD") 
+        g_caption = (grp.get("caption") or "ADD") # No smart_title here, ensure_group handles it
         g_min = grp.get("min"); g_max = grp.get("max")
         can_repeat = grp.get("canSameItemBeSelectedMultipleTimes")
-        group = ensure_group(g_caption, g_min, g_max, can_repeat) 
+        group = ensure_group(g_caption, g_min, g_max, can_repeat) # ensure_group now smart-titles
 
         for opt in (grp.get("options") or []):
-            oname = smart_title((opt.get("caption") or "").strip()) 
+            oname = smart_title((opt.get("caption") or "").strip()) # smart_title the option name
             if not oname: continue
             price = opt.get("price")
             opt_item = _ensure_option_item(group, oname, price)
@@ -732,17 +749,23 @@ def to_flipdish_json(
 
     cat_index: Dict[str, Any] = {}
     
+    # --- MODIFICATION: Add tracker for last "real" category ---
     last_good_category_key: Optional[str] = None
+    # --- END MODIFICATION ---
 
     for page_i, data in enumerate(extracted_pages):
         for cat_in in (data.get("categories") or []):
             cat_caption_raw = (cat_in.get("caption") or "Category").strip()
             
+            # --- MODIFICATION: Logic to detect and merge orphan categories ---
             is_generic = (cat_in.get("caption") is None or cat_caption_raw.lower() == "category")
             
             if is_generic and last_good_category_key:
+                # This is an orphan category (e.g., item on new page).
+                # Merge its items into the last known good category.
                 cat = cat_index[last_good_category_key]
             else:
+                # This is a real, named category. Process as normal.
                 cat_caption = smart_title(cat_caption_raw).upper()
                 cat_caption = re.sub(r'\bAND\b', '&', cat_caption)
                 cat_description = format_description(cat_in.get("description"))
@@ -753,7 +776,7 @@ def to_flipdish_json(
                         "etag": f"W/\"datetime'{nowz}'\"",
                         "timestamp": now_iso_hms(),
                         "caption": cat_caption,
-                        "notes": cat_description, 
+                        "notes": cat_description, # Apply formatted description
                         "enabled": True,
                         "id": guid(),
                         "items": [],
@@ -766,11 +789,12 @@ def to_flipdish_json(
                     out["categories"].append(cat)
                     cat_index[ck] = cat
                 else:
-                    cat = cat_index[ck] 
+                    cat = cat_index[ck] # Get existing category to merge
                     if cat_description:
-                        cat["notes"] = cat_description
+                        cat["notes"] = cat_description # Apply formatted description
                 
-                last_good_category_key = ck 
+                last_good_category_key = ck # Set this as the new "last good category"
+            # --- END MODIFICATION ---
 
             page = src_pdf_doc[page_i] if (attach_pdf_images and src_pdf_doc is not None) else None
 
@@ -779,7 +803,7 @@ def to_flipdish_json(
                 desc = (it.get("description") or "").strip()
                 notes = (it.get("notes") or "").strip()
                 name, inline = split_caption_and_inline_notes(raw)
-                name = smart_title(name or "Item") 
+                name = smart_title(name or "Item") # smart_title the item name
 
                 base_price = it.get("price")
                 if base_price is None:
@@ -794,49 +818,36 @@ def to_flipdish_json(
 
                 raw_item_notes = " ".join(p for p in [desc, notes, inline] if p).strip()
                 
-                # --- MODIFICATION: Smart dietary tag processing ---
+                # --- MODIFICATION: Build paramsJson for allergens/alcohol ---
                 params_json_obj = {}
-                
                 # Get tags from AI
-                ai_official_tags = it.get("official_allergens") or []
-                ai_other_tags = it.get("other_dietary_tags") or []
+                dietary_tags_list = it.get("dietary_tags") or []
                 
-                # Use sets for efficient, unique merging
-                all_detected_tags = set(ai_official_tags) | set(ai_other_tags)
+                # Also check raw description text for allergens the AI might have missed
+                # We check the raw notes AND the raw caption
+                scan_text = raw_item_notes.lower() + " " + raw.lower()
                 
-                # Safety-net scan: Check raw text for any keywords
-                scan_text = (raw_item_notes.lower() + " " + raw.lower())
-                # Also check for symbols like (V), (GF), etc.
+                # Use regex to find abbreviations like (V), (Ve), (GF)
                 abbreviations = re.findall(r'(\([\s]*[A-Z]{1,3}[\s]*\))', raw_item_notes, re.I)
-                abbreviations += re.findall(r'(\([\s]*[A-Z]{1,3}[\s]*\))', raw, re.I) # Check raw title too
-                scan_text += " " + " ".join(abbreviations).lower()
+                scan_text += " " + " ".join(abbreviations)
 
-                for keyword, flipdish_tag in ALL_DIETARY_KEYWORDS.items():
-                    # Check for keyword OR abbreviation
-                    if re.search(fr'\b{re.escape(keyword)}\b', scan_text, re.I):
-                         all_detected_tags.add(flipdish_tag)
-                
-                # Now, filter into the two groups
-                final_official_tags = sorted(list(set(
-                    [tag for tag in all_detected_tags if tag in FLIPDISH_OFFICIAL_LIST]
+                for allergen_key, flipdish_tag in FLIPDISH_ALLERGENS.items():
+                    if flipdish_tag not in dietary_tags_list:
+                        if re.search(fr'\b{re.escape(allergen_key)}\b', scan_text, re.I):
+                             dietary_tags_list.append(flipdish_tag)
+
+                # Ensure tags are unique and in the allowed list
+                final_tags = sorted(list(set(
+                    [tag for tag in dietary_tags_list if tag in FLIPDISH_ALLERGEN_LIST]
                 )))
                 
-                final_other_tags = sorted(list(set(
-                    [tag for tag in all_detected_tags if tag in OTHER_DIETARY_LIST]
-                )))
-
-                # 1. Build paramsJson (ONLY official tags)
-                if final_official_tags:
+                if final_tags:
                     params_json_obj["dietaryConfiguration"] = {
-                        "dietaryTags": ",".join(final_official_tags)
+                        "dietaryTags": ",".join(final_tags)
                     }
                     
-                # 2. Build description (ALL detected tags)
-                all_tags_for_description = sorted(list(set(final_official_tags) | set(final_other_tags)))
-                
-                if all_tags_for_description:
-                    # Append tags to the *original* raw notes, before formatting
-                    tag_string = f"(Contains: {', '.join(all_tags_for_description)})"
+                    # --- NEW: Add tags to the human-readable description ---
+                    tag_string = f"(Contains: {', '.join(final_tags)})"
                     if raw_item_notes and raw_item_notes[-1] not in ".!?":
                         raw_item_notes += ". " + tag_string
                     else:
@@ -867,6 +878,7 @@ def to_flipdish_json(
                     "modifierMembers": [],
                     "overrides": [],
                     "imageUrl": img_data_url or "",
+                    # --- MODIFICATION: Add the final paramsJson string ---
                     "paramsJson": json.dumps(params_json_obj) if params_json_obj else "{}"
                 }
 
@@ -877,7 +889,7 @@ def to_flipdish_json(
                 for grp in llm_mods:
                     _process_group(item, grp)
 
-                cat["items"].append(item) 
+                cat["items"].append(item) # Add item to 'cat' (which is either new or the last good one)
 
     # finalize modifiers
     for g in modifiers_index.values():
@@ -899,28 +911,32 @@ def normalize_with_rules(flipdish_json: dict, rules: dict) -> dict:
     opt_alias = rules.get("option_aliases", {})
 
     def canon_mod_name(name):
+        # We use the already smart-titled name, just uppercased for the alias check
         n = (name or "").strip().upper() 
         for target, alist in aliases.items():
             if n == target or n in [a.upper() for a in alist]:
-                return target.upper() 
+                return target.upper() # Return the UPPER target for key matching
         return n or "ADD"
 
     for g in flipdish_json.get("modifiers", []):
+        # The caption is already smart-titled. We just need to check aliases.
         caption_key = canon_mod_name(g.get("caption"))
         
+        # If it's an alias, use the smart-titled version of the *target*
         if caption_key != g.get("caption", "").upper() and caption_key in aliases:
              g["caption"] = smart_title(caption_key)
         
-        if caption_key in force: 
+        if caption_key in force: # Check against the uppercase key
             mm = force[caption_key]
             if "min" in mm: g["min"] = int(mm["min"])
             if "max" in mm: g["max"] = int(mm["max"])
             
         for it in g.get("items", []):
+            # item caption is already smart-titled
             label = (it.get("caption","") or "").strip().lower()
             for canon, alist in opt_alias.items():
                 if label in [canon] + alist:
-                    it["caption"] = smart_title(canon) 
+                    it["caption"] = smart_title(canon) # Use smart_title on the canonical name
     return flipdish_json
 
 # ============================== Streamlit UI (minimal) ==============================
@@ -981,16 +997,17 @@ with tab1:
         st.success("Flipdish JSON created")
         st.json(result, expanded=False)
         
+        # --- MODIFICATION: Create dynamic file name ---
         fn_slug = menu_name.strip().lower()
         if not fn_slug: fn_slug = "flipdish_menu"
-        fn_slug = re.sub(r'\s+', '_', fn_slug) 
-        fn_slug = re.sub(r'[^a-z0-9_]', '', fn_slug) 
-        fn_slug = fn_slug or "flipdish_menu" 
+        fn_slug = re.sub(r'\s+', '_', fn_slug) # Replace spaces with underscores
+        fn_slug = re.sub(r'[^a-z0-9_]', '', fn_slug) # Remove non-alphanumeric/underscore chars
+        fn_slug = fn_slug or "flipdish_menu" # Fallback
         
         st.download_button(
             "Download Flipdish JSON",
             data=json.dumps(result, indent=2, ensure_ascii=False).encode(),
-            file_name=f"{fn_slug}.json", 
+            file_name=f"{fn_slug}.json", # Use dynamic file name
             mime="application/json"
         )
 
@@ -1010,15 +1027,16 @@ with tab2:
         st.success("Re-shaped successfully")
         st.json(result, expanded=False)
         
+        # --- MODIFICATION: Create dynamic file name ---
         fn_slug_2 = (menu_name2 or "flipdish_menu").strip().lower()
         if not fn_slug_2: fn_slug_2 = "flipdish_menu"
-        fn_slug_2 = re.sub(r'\s+', '_', fn_slug_2) 
-        fn_slug_2 = re.sub(r'[^a-z0-9_]', '', fn_slug_2) 
-        fn_slug_2 = fn_slug_2 or "flipdish_menu" 
+        fn_slug_2 = re.sub(r'\s+', '_', fn_slug_2) # Replace spaces with underscores
+        fn_slug_2 = re.sub(r'[^a-z0-9_]', '', fn_slug_2) # Remove non-alphanumeric/underscore chars
+        fn_slug_2 = fn_slug_2 or "flipdish_menu" # Fallback
         
         st.download_button(
             "Download JSON",
             data=json.dumps(result, indent=2, ensure_ascii=False).encode(),
-            file_name=f"{fn_slug_2}.json", 
+            file_name=f"{fn_slug_2}.json", # Use dynamic file name
             mime="application/json"
         )

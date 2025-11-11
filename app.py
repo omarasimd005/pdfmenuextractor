@@ -683,37 +683,53 @@ def to_flipdish_json(
         _link_group_to_parent(parent_entity, group)
 
     cat_index: Dict[str, Any] = {}
+    
+    # --- MODIFICATION: Add tracker for last "real" category ---
+    last_good_category_key: Optional[str] = None
+    # --- END MODIFICATION ---
 
     for page_i, data in enumerate(extracted_pages):
         for cat_in in (data.get("categories") or []):
             cat_caption_raw = (cat_in.get("caption") or "Category").strip()
-            cat_caption = smart_title(cat_caption_raw).upper()
-            cat_caption = re.sub(r'\bAND\b', '&', cat_caption)
             
-            # --- MODIFICATION: Use new format_description function ---
-            cat_description = format_description(cat_in.get("description"))
-            ck = cat_caption.lower()
-            if ck not in cat_index:
-                cat = {
-                    "etag": f"W/\"datetime'{nowz}'\"",
-                    "timestamp": now_iso_hms(),
-                    "caption": cat_caption,
-                    "notes": cat_description, # Apply formatted description
-                    "enabled": True,
-                    "id": guid(),
-                    "items": [],
-                    "overrides": []
-                }
-                colors = pick_category_colors(cat_caption_raw)
-                if colors:
-                    cat["backgroundColor"] = colors["backgroundColor"]
-                    cat["foregroundColor"] = colors["foregroundColor"]
-                out["categories"].append(cat)
-                cat_index[ck] = cat
+            # --- MODIFICATION: Logic to detect and merge orphan categories ---
+            is_generic = (cat_in.get("caption") is None or cat_caption_raw.lower() == "category")
+            
+            if is_generic and last_good_category_key:
+                # This is an orphan category (e.g., item on new page).
+                # Merge its items into the last known good category.
+                cat = cat_index[last_good_category_key]
             else:
-                cat = cat_index[ck]
-                if cat_description:
-                    cat["notes"] = cat_description # Apply formatted description
+                # This is a real, named category. Process as normal.
+                cat_caption = smart_title(cat_caption_raw).upper()
+                cat_caption = re.sub(r'\bAND\b', '&', cat_caption)
+                cat_description = format_description(cat_in.get("description"))
+                ck = cat_caption.lower()
+                
+                if ck not in cat_index:
+                    cat = {
+                        "etag": f"W/\"datetime'{nowz}'\"",
+                        "timestamp": now_iso_hms(),
+                        "caption": cat_caption,
+                        "notes": cat_description, # Apply formatted description
+                        "enabled": True,
+                        "id": guid(),
+                        "items": [],
+                        "overrides": []
+                    }
+                    colors = pick_category_colors(cat_caption_raw)
+                    if colors:
+                        cat["backgroundColor"] = colors["backgroundColor"]
+                        cat["foregroundColor"] = colors["foregroundColor"]
+                    out["categories"].append(cat)
+                    cat_index[ck] = cat
+                else:
+                    cat = cat_index[ck] # Get existing category to merge
+                    if cat_description:
+                        cat["notes"] = cat_description # Apply formatted description
+                
+                last_good_category_key = ck # Set this as the new "last good category"
+            # --- END MODIFICATION ---
 
             page = src_pdf_doc[page_i] if (attach_pdf_images and src_pdf_doc is not None) else None
 
@@ -770,7 +786,7 @@ def to_flipdish_json(
                 for grp in llm_mods:
                     _process_group(item, grp)
 
-                cat["items"].append(item)
+                cat["items"].append(item) # Add item to 'cat' (which is either new or the last good one)
 
     # finalize modifiers
     for g in modifiers_index.values():

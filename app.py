@@ -128,14 +128,17 @@ def smart_title(text: str) -> str:
         if re.match(r'\s+', t):
             result.append(t); continue
         lower = t.lower()
-        if t.isupper() and len(t) > 1 and "-" not in t:
-            out = t
+        
+        # --- MODIFICATION ---
+        # Removed the `if t.isupper()...` check to force capitalization
+        # rules on all words, even if they were originally uppercase.
+        base = _cap_hyphenated(lower)
+        if (word_index == 0 or word_index == len(words_only) - 1 or lower not in SMALL_WORDS):
+            out = base[0].upper() + base[1:] if base else base
         else:
-            base = _cap_hyphenated(lower)
-            if (word_index == 0 or word_index == len(words_only) - 1 or lower not in SMALL_WORDS):
-                out = base[0].upper() + base[1:] if base else base
-            else:
-                out = base.lower()
+            out = base.lower()
+        # --- END MODIFICATION ---
+
         result.append(out); word_index += 1
     return "".join(result)
 
@@ -550,7 +553,10 @@ def to_flipdish_json(
 
     def ensure_group(caption: str, min_sel: Optional[int] = None, max_sel: Optional[int] = None, can_repeat: Optional[bool] = None) -> Dict[str, Any]:
         key_raw = caption or "ADD"
-        key = key_raw.strip().upper()
+        # MODIFICATION: We apply smart_title directly here, *before* uppercasing for the key
+        caption_smart = smart_title(key_raw if key_raw else "ADD")
+        key = caption_smart.strip().upper() # Use the smart-titled version for the key as well
+        
         nowh = now_iso_hms()
         if key in modifiers_index:
             return modifiers_index[key]
@@ -558,7 +564,7 @@ def to_flipdish_json(
             "etag": f"W/\"datetime'{nowz}'\"",
             "timestamp": nowh,
             "canSameItemBeSelectedMultipleTimes": True if can_repeat is None else bool(can_repeat),
-            "caption": smart_title(key_raw if key_raw else "ADD"),
+            "caption": caption_smart, # Use the smart-titled caption
             "enabled": True,
             "hiddenInOrderFlow": False,
             "id": guid(),
@@ -581,7 +587,7 @@ def to_flipdish_json(
             "etag": f"W/\"datetime'{nowz}'\"",
             "timestamp": nowh,
             "autoSelectedQuantity": 0,
-            "caption": oname,
+            "caption": oname, # oname is already smart-titled
             "doesPriceRepresentRewardPoints": False,
             "enabled": True,
             "id": guid(),
@@ -607,7 +613,7 @@ def to_flipdish_json(
             "etag": f"W/\"datetime'{nowz}'\"",
             "timestamp": now_iso_hms(),
             "canSameItemBeSelectedMultipleTimes": group_obj.get("canSameItemBeSelectedMultipleTimes", True),
-            "caption": group_obj["caption"],
+            "caption": group_obj["caption"], # This will be the smart-titled caption
             "id": guid(),
             "max": group_obj["max"],
             "min": group_obj["min"],
@@ -616,13 +622,13 @@ def to_flipdish_json(
 
     def _process_group(parent_entity: Dict[str, Any], grp: Dict[str, Any]) -> None:
         if not grp: return
-        g_caption = smart_title(grp.get("caption") or "ADD")
+        g_caption = (grp.get("caption") or "ADD") # No smart_title here, ensure_group handles it
         g_min = grp.get("min"); g_max = grp.get("max")
         can_repeat = grp.get("canSameItemBeSelectedMultipleTimes")
-        group = ensure_group(g_caption, g_min, g_max, can_repeat)
+        group = ensure_group(g_caption, g_min, g_max, can_repeat) # ensure_group now smart-titles
 
         for opt in (grp.get("options") or []):
-            oname = smart_title((opt.get("caption") or "").strip())
+            oname = smart_title((opt.get("caption") or "").strip()) # smart_title the option name
             if not oname: continue
             price = opt.get("price")
             opt_item = _ensure_option_item(group, oname, price)
@@ -639,14 +645,14 @@ def to_flipdish_json(
             cat_caption = smart_title(cat_caption_raw).upper()
             cat_caption = re.sub(r'\bAND\b', '&', cat_caption)
             
-            cat_description = (cat_in.get("description") or "").strip()  # <-- MODIFICATION
+            cat_description = (cat_in.get("description") or "").strip()
             ck = cat_caption.lower()
             if ck not in cat_index:
                 cat = {
                     "etag": f"W/\"datetime'{nowz}'\"",
                     "timestamp": now_iso_hms(),
                     "caption": cat_caption,
-                    "notes": cat_description,  # <-- MODIFICATION
+                    "notes": cat_description, 
                     "enabled": True,
                     "id": guid(),
                     "items": [],
@@ -660,8 +666,8 @@ def to_flipdish_json(
                 cat_index[ck] = cat
             else:
                 cat = cat_index[ck]
-                if cat_description:  # <-- MODIFICATION
-                    cat["notes"] = cat_description  # <-- MODIFICATION
+                if cat_description:
+                    cat["notes"] = cat_description
 
             page = src_pdf_doc[page_i] if (attach_pdf_images and src_pdf_doc is not None) else None
 
@@ -670,7 +676,7 @@ def to_flipdish_json(
                 desc = (it.get("description") or "").strip()
                 notes = (it.get("notes") or "").strip()
                 name, inline = split_caption_and_inline_notes(raw)
-                name = smart_title(name or "Item")
+                name = smart_title(name or "Item") # smart_title the item name
 
                 base_price = it.get("price")
                 if base_price is None:
@@ -735,23 +741,32 @@ def normalize_with_rules(flipdish_json: dict, rules: dict) -> dict:
     opt_alias = rules.get("option_aliases", {})
 
     def canon_mod_name(name):
-        n = (name or "").strip().upper()
+        # We use the already smart-titled name, just uppercased for the alias check
+        n = (name or "").strip().upper() 
         for target, alist in aliases.items():
             if n == target or n in [a.upper() for a in alist]:
-                return target
+                return target.upper() # Return the UPPER target for key matching
         return n or "ADD"
 
     for g in flipdish_json.get("modifiers", []):
-        g["caption"] = canon_mod_name(g.get("caption"))
-        if g["caption"] in force:
-            mm = force[g["caption"]]
+        # The caption is already smart-titled. We just need to check aliases.
+        caption_key = canon_mod_name(g.get("caption"))
+        
+        # If it's an alias, use the smart-titled version of the *target*
+        if caption_key != g.get("caption", "").upper() and caption_key in aliases:
+             g["caption"] = smart_title(caption_key)
+        
+        if caption_key in force: # Check against the uppercase key
+            mm = force[caption_key]
             if "min" in mm: g["min"] = int(mm["min"])
             if "max" in mm: g["max"] = int(mm["max"])
+            
         for it in g.get("items", []):
+            # item caption is already smart-titled
             label = (it.get("caption","") or "").strip().lower()
             for canon, alist in opt_alias.items():
                 if label in [canon] + alist:
-                    it["caption"] = canon.title()
+                    it["caption"] = smart_title(canon) # Use smart_title on the canonical name
     return flipdish_json
 
 # ============================== Streamlit UI (minimal) ==============================

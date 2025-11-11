@@ -140,7 +140,13 @@ def smart_title(text: str) -> str:
         # --- END MODIFICATION ---
 
         result.append(out); word_index += 1
-    return "".join(result)
+    
+    # --- NEW MODIFICATION: Replace 'and' with '&' for titles ---
+    final_string = "".join(result)
+    final_string = final_string.replace(" and ", " & ")
+    final_string = final_string.replace(" And ", " & ") # In case 'and' was capitalized (e.g. first word)
+    return final_string
+    # --- END NEW MODIFICATION ---
 
 # Category colors (optional – looks nice if Flipdish shows them)
 CATEGORY_COLOR_RULES = [

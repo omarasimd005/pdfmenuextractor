@@ -185,6 +185,35 @@ def pick_category_colors(caption: str) -> Optional[Dict[str, str]]:
             return {"backgroundColor": bg, "foregroundColor": fg}
     return None
 
+# --- NEW FUNCTION ---
+def format_description(text: str) -> str:
+    """
+    Cleans up description text:
+    - Replaces & with 'and'
+    - Ensures it ends with a full stop.
+    - Capitalizes the first letter of the string.
+    - Capitalizes the first letter after a full stop.
+    """
+    text = (text or "").strip()
+    if not text:
+        return ""
+    
+    # Replace & with and
+    text = text.replace("&", "and")
+    
+    # Ensure it ends with a punctuation mark
+    if text[-1] not in ".!?":
+        text += "."
+        
+    # Capitalize the very first letter
+    text = text[0].upper() + text[1:]
+    
+    # Capitalize letters after a period (e.g. "Sentence one. sentence two.")
+    text = re.sub(r'(?<=\.\s)(\w)', lambda m: m.group(1).upper(), text)
+    
+    return text
+# --- END NEW FUNCTION ---
+
 # ============================== Price parsing ==============================
 
 PRICE_RE = re.compile(r'(?:£|\$|€)?\s*(\d{1,3}(?:\.\d{1,2})?)')
@@ -645,14 +674,15 @@ def to_flipdish_json(
             cat_caption = smart_title(cat_caption_raw).upper()
             cat_caption = re.sub(r'\bAND\b', '&', cat_caption)
             
-            cat_description = (cat_in.get("description") or "").strip()
+            # --- MODIFICATION: Use new format_description function ---
+            cat_description = format_description(cat_in.get("description"))
             ck = cat_caption.lower()
             if ck not in cat_index:
                 cat = {
                     "etag": f"W/\"datetime'{nowz}'\"",
                     "timestamp": now_iso_hms(),
                     "caption": cat_caption,
-                    "notes": cat_description, 
+                    "notes": cat_description, # Apply formatted description
                     "enabled": True,
                     "id": guid(),
                     "items": [],
@@ -667,7 +697,7 @@ def to_flipdish_json(
             else:
                 cat = cat_index[ck]
                 if cat_description:
-                    cat["notes"] = cat_description
+                    cat["notes"] = cat_description # Apply formatted description
 
             page = src_pdf_doc[page_i] if (attach_pdf_images and src_pdf_doc is not None) else None
 
@@ -689,11 +719,16 @@ def to_flipdish_json(
                         png = nearest_image_crop(page, rects[0])
                         if png: img_data_url = to_data_url(png)
 
+                # --- MODIFICATION: Use new format_description function for item notes ---
+                raw_item_notes = " ".join(p for p in [desc, notes, inline] if p).strip()
+                item_notes = format_description(raw_item_notes)
+                # --- END MODIFICATION ---
+
                 item = {
                     "etag": f"W/\"datetime'{nowz}'\"",
                     "timestamp": now_iso_hms(),
                     "caption": name,
-                    "notes": " ".join(p for p in [desc, notes, inline] if p).strip(),
+                    "notes": item_notes, # Apply formatted description
                     "enabled": True,
                     "id": guid(),
                     "doesPriceRepresentRewardPoints": False,

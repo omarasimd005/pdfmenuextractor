@@ -114,8 +114,9 @@ SMALL_WORDS = {
     "via", "with", "over", "under", "up", "down", "off"
 }
 
-# --- MODIFICATION: Added full list of Flipdish-accepted allergens ---
+# --- MODIFICATION: Added Spice, Vegan, Vegetarian, Halal, etc. ---
 FLIPDISH_ALLERGENS = {
+    # Allergens
     "celery": "Celery",
     "crustacean": "Crustaceans",
     "crustaceans": "Crustaceans",
@@ -123,6 +124,9 @@ FLIPDISH_ALLERGENS = {
     "eggs": "Egg",
     "fish": "Fish",
     "gluten": "Gluten",
+    "gluten-free": "Gluten Free",
+    "gluten free": "Gluten Free",
+    "(gf)": "Gluten Free",
     "lupin": "Lupin",
     "milk": "Milk",
     "lactose": "Milk",
@@ -143,7 +147,26 @@ FLIPDISH_ALLERGENS = {
     "sulphur dioxide": "Sulphur Dioxide",
     "sulphites": "Sulphur Dioxide",
     "wheat": "Wheat",
-    "alcohol": "Alcohol"
+    
+    # Dietary / Other
+    "alcohol": "Alcohol",
+    "(alc)": "Alcohol",
+    "vegan": "Vegan",
+    "(ve)": "Vegan",
+    "vegetarian": "Vegetarian",
+    "(v)": "Vegetarian",
+    "halal": "Halal",
+    "(h)": "Halal",
+    
+    # Spice Levels
+    "spicy": "Mild Spice",
+    "mild": "Mild Spice",
+    "mild spice": "Mild Spice",
+    "medium": "Medium Spice",
+    "medium spice": "Medium Spice",
+    "hot": "Hot Spice",
+    "hot spice": "Hot Spice",
+    "extra hot": "Hot Spice"
 }
 FLIPDISH_ALLERGEN_LIST = sorted(list(set(FLIPDISH_ALLERGENS.values())))
 # --- END MODIFICATION ---
@@ -252,11 +275,12 @@ def format_description(text: str) -> str:
     text = text.replace("&", "and")
     
     # Ensure it ends with a punctuation mark
-    if text[-1] not in ".!?":
+    if text and text[-1] not in ".!?":
         text += "."
         
     # Capitalize the very first letter
-    text = text[0].upper() + text[1:]
+    if text:
+        text = text[0].upper() + text[1:]
     
     # Capitalize letters after a period (e.g. "Sentence one. sentence two.")
     text = re.sub(r'(?<=\.\s)(\w)', lambda m: m.group(1).upper(), text)
@@ -442,7 +466,7 @@ Rules:
 - Options without explicit price -> price=null.
 - Keep headings with a price as items; ignore decorative section headers.
 - **Special Offers:** If you find any deals, bundles, or special offers (e.g., "Family Meal," "Lunch Special," "2-for-1 Deal"), group them as items under a new category named "Special Offers".
-- **Allergens & Alcohol:** Look at item descriptions for text, logos, or symbols (e.g., (G), (N), (Ve), (Alc)) indicating allergens or alcohol. Populate `dietary_tags` with an array of strings.
+- **Allergens & Dietary:** Look at item descriptions for text, logos, or symbols (e.g., (G), (N), (Ve), (H), (Alc), spicy) indicating allergens, alcohol, Vegan, Vegetarian, Halal, or Spice Levels. Populate `dietary_tags` with an array of strings.
 - **IMPORTANT:** Only use tag names from this EXACT list: {json.dumps(FLIPDISH_ALLERGEN_LIST)}
 """
 # --- END MODIFICATION ---
@@ -470,9 +494,9 @@ def _run_openai_single_uncached(image: Image.Image, model: str = "gpt-4o", fewsh
                 "description": "Our famous brunch selection",
                 "items": [{
                     "caption": "Combo Breakfast",
-                    "description": "Choose main; if Waffles then choose syrup",
+                    "description": "Choose main; if Waffles then choose syrup. (V), (Contains Gluten, Egg, Milk)",
                     "price": 28,
-                    "dietary_tags": ["Gluten", "Egg", "Milk"],
+                    "dietary_tags": ["Gluten", "Egg", "Milk", "Vegetarian"],
                     "modifiers": [{
                         "caption": "Choose Main",
                         "min": 1, "max": 1,
@@ -793,21 +817,23 @@ def to_flipdish_json(
                         if png: img_data_url = to_data_url(png)
 
                 raw_item_notes = " ".join(p for p in [desc, notes, inline] if p).strip()
-                item_notes = format_description(raw_item_notes)
                 
                 # --- MODIFICATION: Build paramsJson for allergens/alcohol ---
                 params_json_obj = {}
+                # Get tags from AI
                 dietary_tags_list = it.get("dietary_tags") or []
                 
                 # Also check raw description text for allergens the AI might have missed
+                # We check the raw notes AND the raw caption
+                scan_text = raw_item_notes.lower() + " " + raw.lower()
+                
+                # Use regex to find abbreviations like (V), (Ve), (GF)
+                abbreviations = re.findall(r'(\([\s]*[A-Z]{1,3}[\s]*\))', raw_item_notes, re.I)
+                scan_text += " " + " ".join(abbreviations)
+
                 for allergen_key, flipdish_tag in FLIPDISH_ALLERGENS.items():
                     if flipdish_tag not in dietary_tags_list:
-                        # Check for (G), (N) etc.
-                        if re.search(fr'\([\s]*{re.escape(allergen_key[0])}[\s]*\)', raw, re.I) or \
-                           re.search(fr'\([\s]*{re.escape(allergen_key[0])}[\s]*\)', raw_item_notes, re.I):
-                            dietary_tags_list.append(flipdish_tag)
-                        # Check for full word
-                        elif re.search(fr'\b{re.escape(allergen_key)}\b', raw_item_notes, re.I):
+                        if re.search(fr'\b{re.escape(allergen_key)}\b', scan_text, re.I):
                              dietary_tags_list.append(flipdish_tag)
 
                 # Ensure tags are unique and in the allowed list
@@ -819,7 +845,16 @@ def to_flipdish_json(
                     params_json_obj["dietaryConfiguration"] = {
                         "dietaryTags": ",".join(final_tags)
                     }
+                    
+                    # --- NEW: Add tags to the human-readable description ---
+                    tag_string = f"(Contains: {', '.join(final_tags)})"
+                    if raw_item_notes and raw_item_notes[-1] not in ".!?":
+                        raw_item_notes += ". " + tag_string
+                    else:
+                        raw_item_notes += " " + tag_string
                 
+                # Format the final description string
+                item_notes = format_description(raw_item_notes)
                 # --- END MODIFICATION ---
 
                 item = {
@@ -1005,4 +1040,3 @@ with tab2:
             file_name=f"{fn_slug_2}.json", # Use dynamic file name
             mime="application/json"
         )
-    

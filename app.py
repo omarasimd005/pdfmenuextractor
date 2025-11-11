@@ -124,7 +124,7 @@ FLIPDISH_OFFICIAL_ALLERGENS = {
     "egg": "Egg",
     "eggs": "Egg",
     "fish": "Fish",
-    "gluten": "Gluten",
+    "gluten": "Gluten", # Note: "Gluten Free" is separate
     "lupin": "Lupin",
     "milk": "Milk",
     "lactose": "Milk", # Common alias
@@ -157,8 +157,9 @@ OTHER_DIETARY_TAGS = {
     "(gf)": "Gluten Free",
     "vegan": "Vegan",
     "(ve)": "Vegan",
+    "(v)": "Vegan", # From Birch Tree menu
     "vegetarian": "Vegetarian",
-    "(v)": "Vegetarian",
+    "(vg)": "Vegetarian", # From Birch Tree menu
     "halal": "Halal",
     "(h)": "Halal",
     "spicy": "Spicy", # General spicy
@@ -805,10 +806,13 @@ def to_flipdish_json(
                 
                 # Safety-net scan: Check raw text for any keywords
                 scan_text = (raw_item_notes.lower() + " " + raw.lower())
+                # Also check for symbols like (V), (GF), etc.
                 abbreviations = re.findall(r'(\([\s]*[A-Z]{1,3}[\s]*\))', raw_item_notes, re.I)
+                abbreviations += re.findall(r'(\([\s]*[A-Z]{1,3}[\s]*\))', raw, re.I) # Check raw title too
                 scan_text += " " + " ".join(abbreviations).lower()
 
                 for keyword, flipdish_tag in ALL_DIETARY_KEYWORDS.items():
+                    # Check for keyword OR abbreviation
                     if re.search(fr'\b{re.escape(keyword)}\b', scan_text, re.I):
                          all_detected_tags.add(flipdish_tag)
                 
@@ -831,6 +835,7 @@ def to_flipdish_json(
                 all_tags_for_description = sorted(list(set(final_official_tags) | set(final_other_tags)))
                 
                 if all_tags_for_description:
+                    # Append tags to the *original* raw notes, before formatting
                     tag_string = f"(Contains: {', '.join(all_tags_for_description)})"
                     if raw_item_notes and raw_item_notes[-1] not in ".!?":
                         raw_item_notes += ". " + tag_string

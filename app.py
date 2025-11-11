@@ -148,23 +148,32 @@ def smart_title(text: str) -> str:
     return final_string
     # --- END NEW MODIFICATION ---
 
-# Category colors (optional – looks nice if Flipdish shows them)
+# --- MODIFICATION: Updated rules to be more flexible (use \b word boundaries) ---
 CATEGORY_COLOR_RULES = [
-    (re.compile(r"^(starter|starters)$", re.I), "#E67E22"),
-    (re.compile(r"^(main|mains)$", re.I), "#C0392B"),
-    (re.compile(r"^(side|sides)$", re.I), "#FBC02D"),
-    (re.compile(r"^(soup|soups)\s*/\s*(salad|salads)$", re.I), "#2E8B57"),
-    (re.compile(r"^(soup|soups)$", re.I), "#2E8B57"),
-    (re.compile(r"^(salad|salads)$", re.I), "#2E8B57"),
-    (re.compile(r"^(dessert|desserts)$", re.I), "#8E44AD"),
-    (re.compile(r"^(beverage|beverages|drink|drinks)$", re.I), "#9b9b9b"),
-    (re.compile(r"^(special|specials)$", re.I), "#FF66B2"),
-    (re.compile(r"^(kid|kids)\s*(menu)?$", re.I), "#3498DB"),
-    (re.compile(r"^(pizza|pizzas)$", re.I), "#D64541"),
-    (re.compile(r"^(burger|burgers)$", re.I), "#935116"),
-    (re.compile(r"^(sauce|sauces)$", re.I), "#FFDAB9"),
-    (re.compile(r"^(wine|wines|spirit|spirits|wines\s*/\s*spirits)$", re.I), "#2C3E50"),
+    # More specific compound rules first
+    (re.compile(r"\b(soup|soups)\b.*\b(salad|salads)\b", re.I), "#2E8B57"),
+    (re.compile(r"\b(wine|wines)\b.*\b(spirit|spirits)\b", re.I), "#2C3E50"),
+
+    # Standard categories
+    (re.compile(r"\b(starter|starters)\b", re.I), "#E67E22"),
+    (re.compile(r"\b(main|mains)\b", re.I), "#C0392B"),
+    (re.compile(r"\b(side|sides)\b", re.I), "#FBC02D"),
+    (re.compile(r"\b(soup|soups)\b", re.I), "#2E8B57"),
+    (re.compile(r"\b(salad|salads)\b", re.I), "#2E8B57"),
+    (re.compile(r"\b(dessert|desserts)\b", re.I), "#8E44AD"),
+    
+    # Flexible "drinks" rule as requested
+    (re.compile(r"\b(beverage|beverages|drink|drinks)\b", re.I), "#9b9b9b"),
+    
+    (re.compile(r"\b(special|specials)\b", re.I), "#FF66B2"),
+    (re.compile(r"\b(kid|kids)\b", re.I), "#3498DB"), # Matches "Kids Menu", "For the Kids"
+    (re.compile(r"\b(pizza|pizzas)\b", re.I), "#D64541"),
+    (re.compile(r"\b(burger|burgers)\b", re.I), "#935116"),
+    (re.compile(r"\b(sauce|sauces)\b", re.I), "#FFDAB9"),
+    (re.compile(r"\b(wine|wines)\b", re.I), "#2C3E50"),
+    (re.compile(r"\b(spirit|spirits)\b", re.I), "#2C3E50"),
 ]
+# --- END MODIFICATION ---
 
 def _hex_to_rgb(hex_color: str) -> Tuple[int, int, int]:
     h = hex_color.lstrip("#")
@@ -177,19 +186,17 @@ def _relative_luminance(rgb: Tuple[int, int, int]) -> float:
     r, g, b = (_lin(v) for v in rgb)
     return 0.2126*r + 0.7152*g + 0.0722*b
 
+# --- MODIFICATION: Changed .match() to .search() to find keywords anywhere ---
 def pick_category_colors(caption: str) -> Optional[Dict[str, str]]:
     if not caption: return None
     norm = caption.strip()
     for pat, bg in CATEGORY_COLOR_RULES:
-        if pat.match(norm):
+        if pat.search(norm): # Use .search() instead of .match()
             fg = "#FFFFFF" if _relative_luminance(_hex_to_rgb(bg)) < 0.5 else "#000000"
             return {"backgroundColor": bg, "foregroundColor": fg}
-    joined = re.sub(r"\s+", " ", norm, flags=re.I)
-    for pat, bg in CATEGORY_COLOR_RULES:
-        if pat.match(joined):
-            fg = "#FFFFFF" if _relative_luminance(_hex_to_rgb(bg)) < 0.5 else "#000000"
-            return {"backgroundColor": bg, "foregroundColor": fg}
+    # The second loop on 'joined' is no longer needed
     return None
+# --- END MODIFICATION ---
 
 # --- NEW FUNCTION ---
 def format_description(text: str) -> str:

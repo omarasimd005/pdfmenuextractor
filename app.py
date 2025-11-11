@@ -312,6 +312,7 @@ You output ONLY JSON (no markdown) with this schema:
   "categories": [
     {
       "caption": string,
+      "description": string,
       "items": [
         {
           "caption": string,
@@ -632,28 +633,43 @@ def to_flipdish_json(
     cat_index: Dict[str, Any] = {}
 
     for page_i, data in enumerate(extracted_pages):
-        for cat_in in (data.get("categories") or []):
-            cat_caption_raw = (cat_in.get("caption") or "Category").strip()
-            cat_caption = smart_title(cat_caption_raw).upper()
-            ck = cat_caption.lower()
-            if ck not in cat_index:
-                cat = {
-                    "etag": f"W/\"datetime'{nowz}'\"",
-                    "timestamp": now_iso_hms(),
-                    "caption": cat_caption,
-                    "enabled": True,
-                    "id": guid(),
-                    "items": [],
-                    "overrides": []
-                }
-                colors = pick_category_colors(cat_caption_raw)
-                if colors:
-                    cat["backgroundColor"] = colors["backgroundColor"]
-                    cat["foregroundColor"] = colors["foregroundColor"]
-                out["categories"].append(cat)
-                cat_index[ck] = cat
-            else:
-                cat = cat_index[ck]
+    for cat_in in (data.get("categories") or []):
+        cat_caption_raw = (cat_in.get("caption") or "Category").strip()
+        cat_caption = smart_title(cat_caption_raw).upper()
+        ck = cat_caption.lower()
+
+        # NEW: capture possible category-level description/notes from extraction or existing JSON
+        cat_desc = (cat_in.get("description") or "").strip()
+        cat_notes_in = (cat_in.get("notes") or "").strip()  # supports transform-existing-JSON path
+        cat_notes_val = cat_desc or cat_notes_in
+
+        if ck not in cat_index:
+            cat = {
+                "etag": f"W/\"datetime'{nowz}'\"",
+                "timestamp": now_iso_hms(),
+                "caption": cat_caption,
+                "enabled": True,
+                "id": guid(),
+                "items": [],
+                "overrides": []
+            }
+
+            # attach category description as Flipdish notes (if present)
+            if cat_notes_val:
+                cat["notes"] = cat_notes_val
+
+            colors = pick_category_colors(cat_caption_raw)
+            if colors:
+                cat["backgroundColor"] = colors["backgroundColor"]
+                cat["foregroundColor"] = colors["foregroundColor"]
+
+            out["categories"].append(cat)
+            cat_index[ck] = cat
+        else:
+            cat = cat_index[ck]
+            # If we see a description later for an already-seen category and it has no notes yet, fill it once.
+            if cat_notes_val and not cat.get("notes"):
+                cat["notes"] = cat_notes_val
 
             page = src_pdf_doc[page_i] if (attach_pdf_images and src_pdf_doc is not None) else None
 

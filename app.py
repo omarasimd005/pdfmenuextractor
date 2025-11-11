@@ -165,7 +165,9 @@ CATEGORY_COLOR_RULES = [
     # Flexible "drinks" rule as requested
     (re.compile(r"\b(beverage|beverages|drink|drinks)\b", re.I), "#9b9b9b"),
     
-    (re.compile(r"\b(special|specials)\b", re.I), "#FF66B2"),
+    # --- MODIFICATION: Expanded "specials" rule to catch deals/offers ---
+    (re.compile(r"\b(special|specials|offer|offers|deal|deals|bundle)\b", re.I), "#FF66B2"),
+    
     (re.compile(r"\b(kid|kids)\b", re.I), "#3498DB"), # Matches "Kids Menu", "For the Kids"
     (re.compile(r"\b(pizza|pizzas)\b", re.I), "#D64541"),
     (re.compile(r"\b(burger|burgers)\b", re.I), "#935116"),
@@ -402,6 +404,7 @@ Rules:
 - Item price numeric; ignore currency symbols.
 - Options without explicit price -> price=null.
 - Keep headings with a price as items; ignore decorative section headers.
+- **Special Offers:** If you find any deals, bundles, or special offers (e.g., "Family Meal," "Lunch Special," "2-for-1 Deal"), group them as items under a new category named "Special Offers".
 """
 
 def _img_hash(img: Image.Image) -> str:

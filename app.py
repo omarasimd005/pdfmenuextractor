@@ -826,10 +826,18 @@ with tab1:
 
         st.success("Flipdish JSON created")
         st.json(result, expanded=False)
+        
+        # --- MODIFICATION: Create dynamic file name ---
+        fn_slug = menu_name.strip().lower()
+        if not fn_slug: fn_slug = "flipdish_menu"
+        fn_slug = re.sub(r'\s+', '_', fn_slug) # Replace spaces with underscores
+        fn_slug = re.sub(r'[^a-z0-9_]', '', fn_slug) # Remove non-alphanumeric/underscore chars
+        fn_slug = fn_slug or "flipdish_menu" # Fallback
+        
         st.download_button(
             "Download Flipdish JSON",
             data=json.dumps(result, indent=2, ensure_ascii=False).encode(),
-            file_name="flipdish_menu.json",
+            file_name=f"{fn_slug}.json", # Use dynamic file name
             mime="application/json"
         )
 
@@ -848,9 +856,17 @@ with tab2:
         result = to_flipdish_json([raw], menu_name2 or "", price_band_id2.strip(), False, None, rules=None)
         st.success("Re-shaped successfully")
         st.json(result, expanded=False)
+        
+        # --- MODIFICATION: Create dynamic file name ---
+        fn_slug_2 = (menu_name2 or "flipdish_menu").strip().lower()
+        if not fn_slug_2: fn_slug_2 = "flipdish_menu"
+        fn_slug_2 = re.sub(r'\s+', '_', fn_slug_2) # Replace spaces with underscores
+        fn_slug_2 = re.sub(r'[^a-z0-9_]', '', fn_slug_2) # Remove non-alphanumeric/underscore chars
+        fn_slug_2 = fn_slug_2 or "flipdish_menu" # Fallback
+        
         st.download_button(
             "Download JSON",
             data=json.dumps(result, indent=2, ensure_ascii=False).encode(),
-            file_name="flipdish_menu.json",
+            file_name=f"{fn_slug_2}.json", # Use dynamic file name
             mime="application/json"
         )

@@ -97,8 +97,8 @@ def load_file(file) -> LoadedFile:
         pages = []
         try:
             for i in range(len(doc)):
-                # --- MODIFICATION: Lowered DPI from 300 to 200 ---
-                pix = doc[i].get_pixmap(dpi=200)  # better fidelity
+                # --- MODIFICATION: Lowered DPI from 200 to 150 to prevent DecompressionBomb ---
+                pix = doc[i].get_pixmap(dpi=150)
                 pages.append(Image.open(io.BytesIO(pix.tobytes("png"))).convert("RGB"))
         except Exception:
             return LoadedFile([], doc, True)
@@ -921,7 +921,8 @@ def to_flipdish_json(
 
                 # --- MODIFICATION: Scan for custom legend symbols too ---
                 # This looks for G, 0, 00, 000 etc. but NOT as part of another word
-                custom_symbols = re.findall(r'\b([G0]{1,5})\b', raw) # Find G, 0, 00, 000 etc.
+                # We search the raw caption for these symbols
+                custom_symbols = re.findall(r'\b([G0]{1,5})\b', raw) 
                 scan_text += " " + " ".join(custom_symbols).lower()
                 # --- END MODIFICATION ---
 
@@ -1209,4 +1210,3 @@ with tab2:
             file_name=f"{fn_slug_2}.json", 
             mime="application/json"
         )
-    

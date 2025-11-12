@@ -997,6 +997,62 @@ def normalize_with_rules(flipdish_json: dict, rules: dict) -> dict:
                     it["caption"] = smart_title(canon) 
     return flipdish_json
 
+# --- NEW QA FUNCTION ---
+def run_qa_checks(flipdish_json: dict) -> List[Dict[str, str]]:
+    """
+    Scans the final JSON for common issues and returns a list of warnings.
+    """
+    warnings = []
+    cat_names = []
+    mod_names = []
+
+    # Check categories and items
+    for cat in flipdish_json.get("categories", []):
+        cat_name = cat.get("caption", "Unnamed Category")
+        if cat_name.lower() == "category" or cat_name == "Unnamed Category":
+            warnings.append({"Type": "Category", "Name": "N/A", "Issue": "A category is missing a proper name."})
+        
+        cat_names.append(cat_name)
+
+        if not cat.get("items"):
+            warnings.append({"Type": "Category", "Name": cat_name, "Issue": "Category has 0 items."})
+        
+        for item in cat.get("items", []):
+            item_name = item.get("caption", "Unnamed Item")
+            if item_name.lower() == "item" or item_name == "Unnamed Item":
+                warnings.append({"Type": "Item", "Name": "N/A", "Issue": f"An item in category '{cat_name}' is missing a name."})
+            
+            try:
+                price = item.get("pricingProfiles", [{}])[0].get("collectionPrice", 0.0)
+                # Warn if price is 0 AND it's not a container for modifiers
+                if price == 0.0 and not item.get("modifierMembers"):
+                     warnings.append({"Type": "Price", "Name": item_name, "Issue": "Item has a price of 0.00 and no modifiers."})
+            except Exception:
+                 warnings.append({"Type": "Price", "Name": item_name, "Issue": "Item has a missing or invalid price profile."})
+
+    # Check modifier groups
+    for mod in flipdish_json.get("modifiers", []):
+        mod_name = mod.get("caption", "Unnamed Modifier")
+        if mod_name.lower() == "add" or mod_name == "Unnamed Modifier":
+             warnings.append({"Type": "Modifier", "Name": "N/A", "Issue": "A modifier group is missing a proper name (e.g., 'ADD')."})
+        
+        mod_names.append(mod_name)
+        
+        if not mod.get("items"):
+            warnings.append({"Type": "Modifier", "Name": mod_name, "Issue": "Modifier group has 0 options."})
+
+    # Check for duplicates
+    for name in set(cat_names):
+        if cat_names.count(name) > 1:
+            warnings.append({"Type": "Duplicate", "Name": name, "Issue": "This category name is used more than once."})
+    
+    for name in set(mod_names):
+        if mod_names.count(name) > 1:
+            warnings.append({"Type": "Duplicate", "Name": name, "Issue": "This modifier group name is used more than once."})
+    
+    return warnings
+# --- END NEW QA FUNCTION ---
+
 # ============================== Streamlit UI (minimal) ==============================
 
 tab1, tab2 = st.tabs(["PDF/Image → JSON", "Transform existing JSON"])
@@ -1052,7 +1108,18 @@ with tab1:
         except Exception:
             pass
 
-        st.success("Flipdish JSON created")
+        # --- NEW QA CHECK ---
+        st.subheader("QA Check & Warnings")
+        warnings = run_qa_checks(result)
+        if warnings:
+            st.warning("Issues found. Please review before exporting.")
+            # Display as a table
+            st.dataframe(warnings, use_container_width=True)
+        else:
+            st.success("QA complete. No issues found!")
+        # --- END QA CHECK ---
+
+        st.subheader("Generated JSON Preview")
         st.json(result, expanded=False)
         
         fn_slug = menu_name.strip().lower()
@@ -1081,7 +1148,19 @@ with tab2:
 
         raw = json.load(io.BytesIO(jf.read()))
         result = to_flipdish_json([raw], menu_name2 or "", price_band_id2.strip(), False, None, rules=None)
-        st.success("Re-shaped successfully")
+        
+        # --- NEW QA CHECK ---
+        st.subheader("QA Check & Warnings")
+        warnings = run_qa_checks(result)
+        if warnings:
+            st.warning("Issues found. Please review before exporting.")
+            # Display as a table
+            st.dataframe(warnings, use_container_width=True)
+        else:
+            st.success("QA complete. No issues found!")
+        # --- END QA CHECK ---
+        
+        st.subheader("Generated JSON Preview")
         st.json(result, expanded=False)
         
         fn_slug_2 = (menu_name2 or "flipdish_menu").strip().lower()
@@ -1096,3 +1175,4 @@ with tab2:
             file_name=f"{fn_slug_2}.json", 
             mime="application/json"
         )
+    

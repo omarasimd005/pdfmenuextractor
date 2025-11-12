@@ -64,6 +64,7 @@ def to_data_url(png: bytes) -> str:
 # ============================== Loaders ==============================
 
 def _is_pdf(data: bytes) -> bool:
+    # Peek at the first 5 bytes
     return data.startswith(b"%PDF")
 
 def _open_image_from_bytes(data: bytes) -> Image.Image:
@@ -75,40 +76,57 @@ class LoadedFile:
     def __init__(self, images: List[Image.Image], doc: Optional["fitz.Document"], is_pdf: bool):
         self.images, self.doc, self.is_pdf = images, doc, is_pdf
 
-def load_file(file) -> LoadedFile:
-    if file is None:
-        return LoadedFile([], None, False)
-    try:
-        file.seek(0)
-    except Exception:
-        pass
-    data = file.read()
-    if not data:
+# --- MODIFICATION: Replaced 'load_file' with 'load_files' (plural) ---
+def load_files(files: List[Any]) -> LoadedFile:
+    """
+    Processes a list of uploaded files.
+    Can be a single PDF or multiple image files.
+    """
+    if not files:
         return LoadedFile([], None, False)
 
-    name = (getattr(file, "name", "") or "").lower()
-    if _is_pdf(data) or name.endswith(".pdf"):
-        if fitz is None:
-            return LoadedFile([], None, True)
-        try:
-            doc = fitz.open(stream=data, filetype="pdf")
-        except Exception:
-            return LoadedFile([], None, True)
-        pages = []
-        try:
-            for i in range(len(doc)):
-                # --- MODIFICATION: Changed DPI back to 200 for better accuracy ---
-                pix = doc[i].get_pixmap(dpi=300)
-                pages.append(Image.open(io.BytesIO(pix.tobytes("png"))).convert("RGB"))
-        except Exception:
-            return LoadedFile([], doc, True)
-        return LoadedFile(pages, doc, True)
+    all_images = []
+    main_doc = None
+    is_pdf = False
 
-    try:
-        img = _open_image_from_bytes(data)
-        return LoadedFile([img], None, False)
-    except Exception:
-        return LoadedFile([], None, False)
+    # Check for incompatible upload (multi-file with PDF)
+    if len(files) > 1:
+        has_pdf = any(_is_pdf(f.peek(5)) or (getattr(f, "name", "") or "").lower().endswith(".pdf") for f in files)
+        if has_pdf:
+            st.error("You can upload ONE PDF, or MULTIPLE images (PNG/JPG), but not a mix of both or multiple PDFs.")
+            return LoadedFile([], None, False)
+
+    # If we're here, we have either 1 PDF or 1+ images
+    for f in files:
+        f.seek(0)
+        data = f.read()
+        name = (getattr(f, "name", "") or "").lower()
+
+        if _is_pdf(data) or name.endswith(".pdf"):
+            is_pdf = True # This is a PDF
+            if fitz is None:
+                st.error("PDF processing is not available (PyMuPDF not installed).")
+                return LoadedFile([], None, True)
+            try:
+                doc = fitz.open(stream=data, filetype="pdf")
+                main_doc = doc  # Store the doc
+                for i in range(len(doc)):
+                    # --- MODIFICATION: Set DPI to 200 for accuracy ---
+                    pix = doc[i].get_pixmap(dpi=200)
+                    all_images.append(Image.open(io.BytesIO(pix.tobytes("png"))).convert("RGB"))
+            except Exception as e:
+                st.error(f"Error processing PDF '{name}': {e}")
+                return LoadedFile([], None, True)
+        else:
+            # It's an image
+            try:
+                img = _open_image_from_bytes(data)
+                all_images.append(img)
+            except Exception:
+                st.warning(f"Skipping file '{name}' as it's not a valid PDF or image.")
+    
+    return LoadedFile(all_images, main_doc, is_pdf)
+# --- END MODIFICATION ---
 
 # ============================== Text helpers ==============================
 
@@ -310,12 +328,17 @@ def _is_size_modifier_group(caption: str) -> bool:
             return True
     return False
 
-def _normalize_modifier_prices(modifier_groups: list, item_base_price: float) -> Tuple[list, float]:
+def _normalize_modifier_prices(modifier_groups: list, item_base_price: Optional[float]) -> Tuple[list, float]:
     """
     Checks for size-based modifiers with absolute prices.
     Updates the item's base price to be the minimum found.
     Recalculates modifier option prices as the difference.
     """
+    # --- BUG FIX: Handle None price on entry ---
+    if item_base_price is None:
+        item_base_price = 0.0
+    # --- END BUG FIX ---
+    
     if not modifier_groups:
         return modifier_groups, item_base_price
 
@@ -343,7 +366,7 @@ def _normalize_modifier_prices(modifier_groups: list, item_base_price: float) ->
     # If we found absolute prices, set the new base price
     if has_absolute_price_group and all_absolute_prices:
         new_base_price = min(all_absolute_prices)
-    elif not all_absolute_prices and item_base_price is None:
+    elif not all_absolute_prices and item_base_price == 0.0:
         # Edge case: No prices found anywhere, default to 0
         new_base_price = 0.0
     elif item_base_price is not None:
@@ -1119,7 +1142,14 @@ if "last_pdf_text" not in st.session_state:
     st.session_state.last_pdf_text = []
 
 with tab1:
-    f = st.file_uploader("Upload menu (PNG, JPG, JPEG, or PDF)", type=["png", "jpg", "jpeg", "pdf"])
+    # --- MODIFICATION: Allow multiple files ---
+    files = st.file_uploader(
+        "Upload menu (Single PDF, or one/multiple PNG/JPG images)", 
+        type=["png", "jpg", "jpeg", "pdf"],
+        accept_multiple_files=True
+    )
+    # --- END MODIFICATION ---
+    
     menu_name = st.text_input("Menu name", value="Generated Menu")
     price_band_id = st.text_input("Flipdish Price Band ID (required)", value="")
     attach_images = st.checkbox("Attach cropped item images (PDF only)", value=True)
@@ -1129,17 +1159,27 @@ with tab1:
         if not price_band_id.strip():
             st.error("Price Band ID is required."); st.stop()
 
-        loaded = load_file(f)
+        # --- MODIFICATION: Use new load_files function ---
+        if not files:
+            st.error("Please upload at least one valid image or PDF."); st.stop()
+        
+        loaded = load_files(files)
+        # --- END MODIFICATION ---
+
         if not loaded.images:
-            st.error("Please upload a valid image or PDF."); st.stop()
+            st.error("Uploaded file(s) could not be processed. Please check the file and try again."); st.stop()
 
         extracted_pages, per_page_text = [], []
-        with st.spinner("Extracting..."):
+        with st.spinner(f"Extracting {len(loaded.images)} page(s)..."):
             for i, im in enumerate(loaded.images):
                 page_text = ""
+                # Get page text for few-shot context, if possible
                 if loaded.is_pdf and loaded.doc is not None and fitz is not None:
-                    try: page_text = loaded.doc[i].get_text("text") or ""
-                    except Exception: page_text = ""
+                    try: 
+                        page_text = loaded.doc[i].get_text("text") or ""
+                    except Exception: 
+                        page_text = ""
+                
                 fewshot = build_fewshot_context(page_text or menu_name)
                 extracted = run_openai_single(im, model=model, fewshot=fewshot)
                 extracted_pages.append(extracted)

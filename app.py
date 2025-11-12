@@ -177,16 +177,22 @@ OTHER_DIETARY_LIST = sorted(list(set(OTHER_DIETARY_TAGS.values())))
 ALL_DIETARY_KEYWORDS = {**FLIPDISH_OFFICIAL_ALLERGENS, **OTHER_DIETARY_TAGS}
 # --- END MODIFICATION ---
 
-# --- NEW: Keywords to detect size-based modifier groups ---
+# --- MODIFICATION: Added "quantity" keywords ---
 SIZE_MODIFIER_PATTERNS = [
+    # Size
     re.compile(r'\bsize\b', re.I),
     re.compile(r'\bsizes\b', re.I),
     re.compile(r'^select a size$', re.I),
     re.compile(r'^choose your size$', re.I),
     re.compile(r'^select size$', re.I),
     re.compile(r'^choose size$', re.I),
+    # Quantity
+    re.compile(r'\bquantity\b', re.I),
+    re.compile(r'\bpieces\b', re.I), # e.g., "6 pieces", "12 pieces"
+    re.compile(r'^select quantity$', re.I),
+    re.compile(r'^choose quantity$', re.I),
 ]
-# --- END NEW ---
+# --- END MODIFICATION ---
 
 
 def _cap_hyphenated(token: str) -> str:
@@ -935,7 +941,7 @@ def to_flipdish_json(
                         "timestamp": now_iso_hms(),
                         "priceBandId": price_band_id,
                         "collectionPrice": float(base_price), # USES CORRECTED BASE PRICE
-                        "deliveryPrice": float(base_price), # USES CORRECTED BASE PRICE
+                        "deliveryPrice": float(base_price), # USES CORRECTTED BASE PRICE
                         "dineInPrice": float(base_price), # USES CORRECTED BASE PRICE
                         "takeawayPrice": float(base_price), # USES CORRECTED BASE PRICE
                     }],
@@ -1175,4 +1181,3 @@ with tab2:
             file_name=f"{fn_slug_2}.json", 
             mime="application/json"
         )
-    

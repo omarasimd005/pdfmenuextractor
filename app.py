@@ -478,7 +478,7 @@ def try_load_rules() -> dict:
 
 # ============================== Vision extraction ==============================
 
-# --- MODIFICATION: Added "category_type" to schema and rules ---
+# --- MODIFICATION: Added "Find the Legend" rule ---
 BASE_EXTRACTION_PROMPT = f"""
 You output ONLY JSON (no markdown) with this schema:
 
@@ -532,11 +532,13 @@ Detect modifiers from many phrasings:
 - CONDITIONALS: If a choice leads to another selection (e.g., size -> sides), attach the follow-up group(s) under that option's "modifiers".
 
 Rules:
+- **Step 1: Find the Legend:** First, scan the *entire* menu to find any "Allergy Key" or "Legend" that defines symbols (e.g., 🌶️ = Spicy, (G) = Gluten-Free, (V) = Vegetarian). Remember this legend.
+- **Step 2: Apply the Legend:** As you extract each item, use the legend you found. If an item has a symbol (like 🌶️, 000, or G), add the corresponding tag (e.g., "Spicy" or "Gluten Free") to its `other_dietary_tags` or `official_allergens` list.
+- **Step 3: Find Other Tags:** Also look for simple text or common symbols (e.g., (N), (H), (Alc)) indicating allergens, alcohol, Vegan, Vegetarian, Halal, or Spice Levels, even if they aren't in the legend.
 - Item price numeric; ignore currency symbols.
 - Options without explicit price -> price=null.
 - Keep headings with a price as items; ignore decorative section headers.
 - **Special Offers:** If you find any deals, bundles, or special offers (e.g., "Family Meal," "Lunch Special," "2-for-1 Deal"), group them as items under a new category named "Special Offers".
-- **Allergens & Dietary:** Look for text, logos, or symbols (e.g., (G), (N), (Ve), (H), (Alc), spicy).
 - Populate `official_allergens` ONLY with tags from this list: {json.dumps(FLIPDISH_OFFICIAL_LIST)}
 - Populate `other_dietary_tags` with tags like "Vegan", "Vegetarian", "Halal", "Gluten Free", or spice levels from this list: {json.dumps(OTHER_DIETARY_LIST)}
 - **Strict Boundaries:** Each item is distinct. Be very careful to only associate modifiers, prices, and descriptions that are clearly and closely related to a single item. Do not 'mix' or 'bleed' information (like prices or add-ons) from one item to another.
@@ -1112,7 +1114,7 @@ with tab1:
             extracted_pages,
             menu_name,
             price_band_id.strip(),
-            attach_images and loaded.is_pdf,
+            attach_images and loaded.is_pdf,.
             loaded.doc if (loaded.is_pdf and fitz is not None) else None,
             rules=None  # auto-load rules.json silently
         )

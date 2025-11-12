@@ -465,7 +465,7 @@ def try_load_rules() -> dict:
 
 # ============================== Vision extraction ==============================
 
-# --- MODIFICATION: Split dietary_tags into official_allergens and other_dietary_tags ---
+# --- MODIFICATION: Added "Strict Boundaries" rule ---
 BASE_EXTRACTION_PROMPT = f"""
 You output ONLY JSON (no markdown) with this schema:
 
@@ -525,6 +525,7 @@ Rules:
 - **Allergens & Dietary:** Look for text, logos, or symbols (e.g., (G), (N), (Ve), (H), (Alc), spicy).
 - Populate `official_allergens` ONLY with tags from this list: {json.dumps(FLIPDISH_OFFICIAL_LIST)}
 - Populate `other_dietary_tags` with tags like "Vegan", "Vegetarian", "Halal", "Gluten Free", or spice levels from this list: {json.dumps(OTHER_DIETARY_LIST)}
+- **Strict Boundaries:** Each item is distinct. Be very careful to only associate modifiers, prices, and descriptions that are clearly and closely related to a single item. Do not 'mix' or 'bleed' information (like prices or add-ons) from one item to another.
 """
 # --- END MODIFICATION ---
 
@@ -1057,7 +1058,7 @@ with tab1:
         fn_slug = menu_name.strip().lower()
         if not fn_slug: fn_slug = "flipdish_menu"
         fn_slug = re.sub(r'\s+', '_', fn_slug) 
-        fn_slug = re.sub(r'[^a-z0_9-]', '', fn_slug) # Allow hyphens
+        fn_slug = re.sub(r'[^a-z0-9_]', '', fn_slug) # Switched back to only underscore
         fn_slug = fn_slug or "flipdish_menu" 
         
         st.download_button(
@@ -1086,7 +1087,7 @@ with tab2:
         fn_slug_2 = (menu_name2 or "flipdish_menu").strip().lower()
         if not fn_slug_2: fn_slug_2 = "flipdish_menu"
         fn_slug_2 = re.sub(r'\s+', '_', fn_slug_2) 
-        fn_slug_2 = re.sub(r'[^a-z0_9-]', '', fn_slug_2) # Allow hyphens
+        fn_slug_2 = re.sub(r'[^a-z0-9_]', '', fn_slug_2) # Switched back to only underscore
         fn_slug_2 = fn_slug_2 or "flipdish_menu" 
         
         st.download_button(

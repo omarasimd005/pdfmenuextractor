@@ -499,7 +499,7 @@ def try_load_rules() -> dict:
 
 # ============================== Vision extraction ==============================
 
-# --- MODIFICATION: Added "Master Price Block" rule ---
+# --- MODIFICATION: Added "Master Price Block" and "Strict Sectional Boundaries" rules ---
 BASE_EXTRACTION_PROMPT = f"""
 You output ONLY JSON (no markdown) with this schema:
 
@@ -560,6 +560,7 @@ Rules:
     1.  Create a "Size" or "Type" modifier group for *each* item ("Margherita", "Pepperoni").
     2.  Add options to that group using the prices from the master grid (e.g., "Small $10", "Medium $12", "Large $14").
     3.  Set the main `price` for the item itself to `null` or `0`.
+- **Strict Sectional Boundaries:** Pay close attention to headings. Do not mix items from one section (e.g., "Normal Burgers") with another section (e.g., "Special Burgers"). A new heading must start a new, distinct category.
 - Item price numeric; ignore currency symbols.
 - Options without explicit price -> price=null.
 - Keep headings with a price as items; ignore decorative section headers.

@@ -223,24 +223,25 @@ def smart_title(text: str) -> str:
     final_string = final_string.replace(" And ", " & ")
     return final_string
 
-CATEGORY_COLOR_RULES = [
-    (re.compile(r"\b(soup|soups)\b.*\b(salad|salads)\b", re.I), "#2E8B57"),
-    (re.compile(r"\b(wine|wines)\b.*\b(spirit|spirits)\b", re.I), "#2C3E50"),
-    (re.compile(r"\b(starter|starters)\b", re.I), "#E67E22"),
-    (re.compile(r"\b(main|mains)\b", re.I), "#C0392B"),
-    (re.compile(r"\b(side|sides)\b", re.I), "#FBC02D"),
-    (re.compile(r"\b(soup|soups)\b", re.I), "#2E8B57"),
-    (re.compile(r"\b(salad|salads)\b", re.I), "#2E8B57"),
-    (re.compile(r"\b(dessert|desserts)\b", re.I), "#8E44AD"),
-    (re.compile(r"\b(beverage|beverages|drink|drinks)\b", re.I), "#9b9b9b"),
-    (re.compile(r"\b(special|specials|offer|offers|deal|deals|bundle)\b", re.I), "#FF66B2"),
-    (re.compile(r"\b(kid|kids)\b", re.I), "#3498DB"),
-    (re.compile(r"\b(pizza|pizzas)\b", re.I), "#D64541"),
-    (re.compile(r"\b(burger|burgers)\b", re.I), "#935116"),
-    (re.compile(r"\b(sauce|sauces)\b", re.I), "#FFDAB9"),
-    (re.compile(r"\b(wine|wines)\b", re.I), "#2C3E50"),
-    (re.compile(r"\b(spirit|spirits)\b", re.I), "#2C3E50"),
-]
+# --- MODIFICATION: Changed from Regex list to simple dictionary lookup ---
+CATEGORY_COLOR_MAP = {
+    "Starters": {"backgroundColor": "#E67E22", "foregroundColor": "#FFFFFF"},
+    "Mains": {"backgroundColor": "#C0392B", "foregroundColor": "#FFFFFF"},
+    "Sides": {"backgroundColor": "#FBC02D", "foregroundColor": "#000000"},
+    "Soup/Salad": {"backgroundColor": "#2E8B57", "foregroundColor": "#FFFFFF"},
+    "Desserts": {"backgroundColor": "#8E44AD", "foregroundColor": "#FFFFFF"},
+    "Drinks": {"backgroundColor": "#9b9b9b", "foregroundColor": "#FFFFFF"},
+    "Specials": {"backgroundColor": "#FF66B2", "foregroundColor": "#000000"}, # Corrected foreground
+    "Kids": {"backgroundColor": "#3498DB", "foregroundColor": "#FFFFFF"},
+    "Pizza": {"backgroundColor": "#D64541", "foregroundColor": "#FFFFFF"},
+    "Burgers": {"backgroundColor": "#935116", "foregroundColor": "#FFFFFF"},
+    "Sauces": {"backgroundColor": "#FFDAB9", "foregroundColor": "#000000"},
+    "Alcohol": {"backgroundColor": "#2C3E50", "foregroundColor": "#FFFFFF"},
+    "Other": None, # Default, no color
+}
+CATEGORY_TYPES_LIST = sorted(list(CATEGORY_COLOR_MAP.keys()))
+# --- END MODIFICATION ---
+
 
 def _hex_to_rgb(hex_color: str) -> Tuple[int, int, int]:
     h = hex_color.lstrip("#")
@@ -253,14 +254,16 @@ def _relative_luminance(rgb: Tuple[int, int, int]) -> float:
     r, g, b = (_lin(v) for v in rgb)
     return 0.2126*r + 0.7152*g + 0.0722*b
 
-def pick_category_colors(caption: str) -> Optional[Dict[str, str]]:
-    if not caption: return None
-    norm = caption.strip()
-    for pat, bg in CATEGORY_COLOR_RULES:
-        if pat.search(norm): # Use .search() instead of .match()
-            fg = "#FFFFFF" if _relative_luminance(_hex_to_rgb(bg)) < 0.5 else "#000000"
-            return {"backgroundColor": bg, "foregroundColor": fg}
-    return None
+# --- MODIFICATION: Changed to simple dictionary lookup by type ---
+def pick_category_colors(category_type: str) -> Optional[Dict[str, str]]:
+    """
+    Returns the color dict for a given category type.
+    """
+    if not category_type:
+        return None
+    # Find the type, default to "Other"
+    return CATEGORY_COLOR_MAP.get(category_type, CATEGORY_COLOR_MAP["Other"])
+# --- END MODIFICATION ---
 
 def format_description(text: str) -> str:
     """
@@ -471,7 +474,7 @@ def try_load_rules() -> dict:
 
 # ============================== Vision extraction ==============================
 
-# --- MODIFICATION: Added "Strict Boundaries" rule ---
+# --- MODIFICATION: Added "category_type" to schema and rules ---
 BASE_EXTRACTION_PROMPT = f"""
 You output ONLY JSON (no markdown) with this schema:
 
@@ -481,6 +484,7 @@ You output ONLY JSON (no markdown) with this schema:
     {{
       "caption": string,
       "description": string,
+      "category_type": string,
       "items": [
         {{
           "caption": string,
@@ -532,6 +536,7 @@ Rules:
 - Populate `official_allergens` ONLY with tags from this list: {json.dumps(FLIPDISH_OFFICIAL_LIST)}
 - Populate `other_dietary_tags` with tags like "Vegan", "Vegetarian", "Halal", "Gluten Free", or spice levels from this list: {json.dumps(OTHER_DIETARY_LIST)}
 - **Strict Boundaries:** Each item is distinct. Be very careful to only associate modifiers, prices, and descriptions that are clearly and closely related to a single item. Do not 'mix' or 'bleed' information (like prices or add-ons) from one item to another.
+- **Category Type:** For each category, classify its `caption` into one of these types: {json.dumps(CATEGORY_TYPES_LIST)}. If the category is "Tea", "Coffee", or "Hot Drinks", classify it as "Drinks". If "Wine" or "Spirits", classify as "Alcohol".
 """
 # --- END MODIFICATION ---
 
@@ -556,6 +561,7 @@ def _run_openai_single_uncached(image: Image.Image, model: str = "gpt-4o", fewsh
             "categories": [{
                 "caption": "brunch",
                 "description": "Our famous brunch selection",
+                "category_type": "Mains",
                 "items": [{
                     "caption": "Combo Breakfast",
                     "description": "Choose main; if Waffles then choose syrup. (V), (Contains Gluten, Egg, Milk)",
@@ -827,6 +833,9 @@ def to_flipdish_json(
                 cat_caption = smart_title(cat_caption_raw).upper()
                 cat_caption = re.sub(r'\bAND\b', '&', cat_caption)
                 cat_description = format_description(cat_in.get("description"))
+                
+                # --- MODIFICATION: Read new category_type field from AI ---
+                cat_type = cat_in.get("category_type", "Other") # Default to "Other"
                 ck = cat_caption.lower()
                 
                 if ck not in cat_index:
@@ -840,7 +849,8 @@ def to_flipdish_json(
                         "items": [],
                         "overrides": []
                     }
-                    colors = pick_category_colors(cat_caption_raw)
+                    # Use the *classified type* for colors, not the name
+                    colors = pick_category_colors(cat_type)
                     if colors:
                         cat["backgroundColor"] = colors["backgroundColor"]
                         cat["foregroundColor"] = colors["foregroundColor"]
@@ -851,7 +861,8 @@ def to_flipdish_json(
                     if cat_description:
                         cat["notes"] = cat_description
                 
-                last_good_category_key = ck 
+                last_good_category_key = ck
+            # --- END MODIFICATION ---
 
             page = src_pdf_doc[page_i] if (attach_pdf_images and src_pdf_doc is not None) else None
 

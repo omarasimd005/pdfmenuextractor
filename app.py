@@ -98,7 +98,7 @@ def load_file(file) -> LoadedFile:
         try:
             for i in range(len(doc)):
                 # --- MODIFICATION: Changed DPI back to 200 for better accuracy ---
-                pix = doc[i].get_pixmap(dpi=200)
+                pix = doc[i].get_pixmap(dpi=300)
                 pages.append(Image.open(io.BytesIO(pix.tobytes("png"))).convert("RGB"))
         except Exception:
             return LoadedFile([], doc, True)

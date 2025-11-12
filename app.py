@@ -35,6 +35,9 @@ except Exception:
 
 # --------- basic setup ---------
 ImageFile.LOAD_TRUNCATED_IMAGES = True
+# --- MODIFICATION: Disable the Decompression Bomb check ---
+Image.MAX_IMAGE_PIXELS = None
+# --- END MODIFICATION ---
 load_dotenv()
 st.set_page_config(page_title="Flipdish Menu Builder", page_icon="🍽️", layout="centered")
 st.title("Flipdish Menu Builder")
@@ -94,7 +97,8 @@ def load_file(file) -> LoadedFile:
         pages = []
         try:
             for i in range(len(doc)):
-                pix = doc[i].get_pixmap(dpi=300)  # better fidelity
+                # --- MODIFICATION: Lowered DPI from 300 to 200 ---
+                pix = doc[i].get_pixmap(dpi=200)  # better fidelity
                 pages.append(Image.open(io.BytesIO(pix.tobytes("png"))).convert("RGB"))
         except Exception:
             return LoadedFile([], doc, True)

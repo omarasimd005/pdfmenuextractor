@@ -91,7 +91,12 @@ def load_files(files: List[Any]) -> LoadedFile:
 
     # Check for incompatible upload (multi-file with PDF)
     if len(files) > 1:
-        has_pdf = any(_is_pdf(f.peek(5)) or (getattr(f, "name", "") or "").lower().endswith(".pdf") for f in files)
+        # We need to read a few bytes to check without consuming the file
+        # This is complex with Streamlit's uploader, so we'll check file *names* first
+        # as a simpler, good-enough check.
+        file_names = [(getattr(f, "name", "") or "").lower() for f in files]
+        has_pdf = any(name.endswith(".pdf") for name in file_names)
+        
         if has_pdf:
             st.error("You can upload ONE PDF, or MULTIPLE images (PNG/JPG), but not a mix of both or multiple PDFs.")
             return LoadedFile([], None, False)
@@ -111,8 +116,8 @@ def load_files(files: List[Any]) -> LoadedFile:
                 doc = fitz.open(stream=data, filetype="pdf")
                 main_doc = doc  # Store the doc
                 for i in range(len(doc)):
-                    # --- MODIFICATION: Set DPI to 200 for accuracy ---
-                    pix = doc[i].get_pixmap(dpi=200)
+                    # --- MODIFICATION: Set DPI to 300 for accuracy ---
+                    pix = doc[i].get_pixmap(dpi=300)
                     all_images.append(Image.open(io.BytesIO(pix.tobytes("png"))).convert("RGB"))
             except Exception as e:
                 st.error(f"Error processing PDF '{name}': {e}")

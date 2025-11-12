@@ -199,6 +199,9 @@ SIZE_MODIFIER_PATTERNS = [
     re.compile(r'\bpieces\b', re.I), # e.g., "6 pieces", "12 pieces"
     re.compile(r'^select quantity$', re.I),
     re.compile(r'^choose quantity$', re.I),
+    # Columns
+    re.compile(r'\bsingle\b', re.I), # For "Single" vs "Meal"
+    re.compile(r'\bmeal\b', re.I),
 ]
 # --- END MODIFICATION ---
 
@@ -320,9 +323,10 @@ def _normalize_modifier_prices(modifier_groups: list, item_base_price: float) ->
     
     # First pass: find all absolute size prices and determine the true base price
     all_absolute_prices = []
-    if item_base_price is not None:
+    if item_base_price is not None and item_base_price > 0: # Only count if > 0
         all_absolute_prices.append(item_base_price)
 
+    has_absolute_price_group = False
     for grp in modifier_groups:
         if _is_size_modifier_group(grp.get("caption")):
             options = grp.get("options", [])
@@ -330,15 +334,28 @@ def _normalize_modifier_prices(modifier_groups: list, item_base_price: float) ->
                 continue
 
             # Heuristic: If ANY option has a price > 0, assume it's an absolute price group.
-            # This is safer than checking against base_price, as base_price could be 0.
             if any(opt.get("price") is not None and opt.get("price") > 0 for opt in options):
+                has_absolute_price_group = True
                 for opt in options:
                     if opt.get("price") is not None:
                         all_absolute_prices.append(opt["price"])
 
     # If we found absolute prices, set the new base price
-    if all_absolute_prices:
+    if has_absolute_price_group and all_absolute_prices:
         new_base_price = min(all_absolute_prices)
+    elif not all_absolute_prices and item_base_price is None:
+        # Edge case: No prices found anywhere, default to 0
+        new_base_price = 0.0
+    elif item_base_price is not None:
+        # No absolute modifier prices, so the item's own price is the base
+        new_base_price = item_base_price
+    elif all_absolute_prices:
+        # Item price was null, but we have modifier prices
+        new_base_price = min(all_absolute_prices)
+    else:
+        # Default fallback
+        new_base_price = 0.0
+
 
     # Second pass: Recalculate prices as differences from the new base price
     for grp in modifier_groups:
@@ -482,7 +499,7 @@ def try_load_rules() -> dict:
 
 # ============================== Vision extraction ==============================
 
-# --- MODIFICATION: Added "Find the Legend" rule ---
+# --- MODIFICATION: Added "Master Price Block" rule ---
 BASE_EXTRACTION_PROMPT = f"""
 You output ONLY JSON (no markdown) with this schema:
 
@@ -539,6 +556,10 @@ Rules:
 - **Step 1: Find the Legend:** First, scan the *entire* menu to find any "Allergy Key" or "Legend" that defines symbols (e.g., 🌶️ = Spicy, (G) = Gluten-Free, (V) = Vegetarian). Remember this legend.
 - **Step 2: Apply the Legend:** As you extract each item, use the legend you found. If an item has a symbol (like 🌶️, 000, or G), add the corresponding tag (e.g., "Spicy" or "Gluten Free") to its `other_dietary_tags` or `official_allergens` list.
 - **Step 3: Find Other Tags:** Also look for simple text or common symbols (e.g., (N), (H), (Alc)) indicating allergens, alcohol, Vegan, Vegetarian, Halal, or Spice Levels, even if they aren't in the legend.
+- **Master Price Blocks:** If a category (e.g., "Pizza") lists a price grid at the TOP (e.g., "Small $10, Medium $12, Large $14") and the items below it ("Margherita", "Pepperoni") have NO prices, you MUST:
+    1.  Create a "Size" or "Type" modifier group for *each* item ("Margherita", "Pepperoni").
+    2.  Add options to that group using the prices from the master grid (e.g., "Small $10", "Medium $12", "Large $14").
+    3.  Set the main `price` for the item itself to `null` or `0`.
 - Item price numeric; ignore currency symbols.
 - Options without explicit price -> price=null.
 - Keep headings with a price as items; ignore decorative section headers.
@@ -889,8 +910,8 @@ def to_flipdish_json(
 
                 # 2. Get initial base price
                 base_price = it.get("price")
-                if base_price is None:
-                    base_price = parse_price_from_text(raw, desc, notes) or 0.0
+                # if base_price is None: # Old logic
+                #     base_price = parse_price_from_text(raw, desc, notes) or 0.0
 
                 # 3. Get modifiers
                 llm_mods = it.get("modifiers") or []
@@ -898,6 +919,7 @@ def to_flipdish_json(
                     llm_mods = fallback_extract_modifiers(raw_item_notes)
                 
                 # 4. === NEW: Normalize prices and find TRUE base price ===
+                # This will find the lowest price, even if item price is 0 or null
                 llm_mods, base_price = _normalize_modifier_prices(llm_mods, base_price)
                 
                 # 5. Get image URL
@@ -1126,7 +1148,7 @@ with tab1:
             extracted_pages,
             menu_name,
             price_band_id.strip(),
-            attach_images and loaded.is_pdf, # <-- SYNTAX ERROR FIX
+            attach_images and loaded.is_pdf, 
             loaded.doc if (loaded.is_pdf and fitz is not None) else None,
             rules=None  # auto-load rules.json silently
         )

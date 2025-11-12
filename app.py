@@ -926,6 +926,7 @@ def to_flipdish_json(
                 # --- END MODIFICATION ---
 
                 for keyword, flipdish_tag in ALL_DIETARY_KEYWORDS.items():
+                    # Check for keyword OR abbreviation
                     if re.search(fr'\b{re.escape(keyword)}\b', scan_text, re.I):
                          all_detected_tags.add(flipdish_tag)
                 
@@ -1124,7 +1125,7 @@ with tab1:
             extracted_pages,
             menu_name,
             price_band_id.strip(),
-            attach_images and loaded.is_pdf,
+            attach_images and loaded.is_pdf, # <-- SYNTAX ERROR WAS HERE
             loaded.doc if (loaded.is_pdf and fitz is not None) else None,
             rules=None  # auto-load rules.json silently
         )
@@ -1208,3 +1209,4 @@ with tab2:
             file_name=f"{fn_slug_2}.json", 
             mime="application/json"
         )
+    

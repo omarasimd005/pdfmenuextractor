@@ -97,8 +97,8 @@ def load_file(file) -> LoadedFile:
         pages = []
         try:
             for i in range(len(doc)):
-                # --- MODIFICATION: Lowered DPI from 200 to 150 to prevent DecompressionBomb ---
-                pix = doc[i].get_pixmap(dpi=150)
+                # --- MODIFICATION: Changed DPI back to 200 for better accuracy ---
+                pix = doc[i].get_pixmap(dpi=200)
                 pages.append(Image.open(io.BytesIO(pix.tobytes("png"))).convert("RGB"))
         except Exception:
             return LoadedFile([], doc, True)

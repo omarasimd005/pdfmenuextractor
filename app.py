@@ -159,6 +159,7 @@ OTHER_DIETARY_TAGS = {
     "gluten-free": "Gluten Free",
     "gluten free": "Gluten Free",
     "(gf)": "Gluten Free",
+    "g": "Gluten Free", # From Alisan menu
     "vegan": "Vegan",
     "(ve)": "Vegan",
     "(v)": "Vegan", # From Birch Tree menu
@@ -173,7 +174,10 @@ OTHER_DIETARY_TAGS = {
     "medium spice": "Medium Spice",
     "hot": "Hot Spice",
     "hot spice": "Hot Spice",
-    "extra hot": "Hot Spice"
+    "extra hot": "Hot Spice",
+    "000": "Spicy", # From Alisan menu
+    "00": "Spicy", # From Alisan menu
+    "0": "Spicy", # From Alisan menu
 }
 OTHER_DIETARY_LIST = sorted(list(set(OTHER_DIETARY_TAGS.values())))
 
@@ -915,6 +919,12 @@ def to_flipdish_json(
                 abbreviations += re.findall(r'(\([\s]*[A-Z]{1,3}[\s]*\))', raw, re.I) # Check raw title too
                 scan_text += " " + " ".join(abbreviations).lower()
 
+                # --- MODIFICATION: Scan for custom legend symbols too ---
+                # This looks for 0, 00, 000, G, etc.
+                custom_symbols = re.findall(r'([G0]{1,5})', raw) # Find G, 0, 00, 000 etc.
+                scan_text += " " + " ".join(custom_symbols).lower()
+                # --- END MODIFICATION ---
+
                 for keyword, flipdish_tag in ALL_DIETARY_KEYWORDS.items():
                     if re.search(fr'\b{re.escape(keyword)}\b', scan_text, re.I):
                          all_detected_tags.add(flipdish_tag)
@@ -1114,7 +1124,7 @@ with tab1:
             extracted_pages,
             menu_name,
             price_band_id.strip(),
-            attach_images and loaded.is_pdf,.
+            attach_images and loaded.is_pdf,
             loaded.doc if (loaded.is_pdf and fitz is not None) else None,
             rules=None  # auto-load rules.json silently
         )

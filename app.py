@@ -91,9 +91,7 @@ def load_files(files: List[Any]) -> LoadedFile:
 
     # Check for incompatible upload (multi-file with PDF)
     if len(files) > 1:
-        # We need to read a few bytes to check without consuming the file
-        # This is complex with Streamlit's uploader, so we'll check file *names* first
-        # as a simpler, good-enough check.
+        # Check file names as a simpler, good-enough check.
         file_names = [(getattr(f, "name", "") or "").lower() for f in files]
         has_pdf = any(name.endswith(".pdf") for name in file_names)
         
@@ -116,8 +114,8 @@ def load_files(files: List[Any]) -> LoadedFile:
                 doc = fitz.open(stream=data, filetype="pdf")
                 main_doc = doc  # Store the doc
                 for i in range(len(doc)):
-                    # --- MODIFICATION: Set DPI to 300 for accuracy ---
-                    pix = doc[i].get_pixmap(dpi=300)
+                    # --- MODIFICATION: Set DPI to 200 for accuracy ---
+                    pix = doc[i].get_pixmap(dpi=200)
                     all_images.append(Image.open(io.BytesIO(pix.tobytes("png"))).convert("RGB"))
             except Exception as e:
                 st.error(f"Error processing PDF '{name}': {e}")
@@ -579,6 +577,7 @@ Detect modifiers from many phrasings:
 - "Choice of toast or pancakes", "Choose from ..."
 - Upgrades: "… (+2 to upgrade …)" as options with price
 - CONDITIONALS: If a choice leads to another selection (e.g., size -> sides), attach the follow-up group(s) under that option's "modifiers".
+- **Modifier Captions:** Be descriptive. Use 'Pizza Size' or 'Drink Size', not just 'Size' if the options are different.
 
 Rules:
 - **Step 1: Find the Legend:** First, scan the *entire* menu to find any "Allergy Key" or "Legend" that defines symbols (e.g., 🌶️ = Spicy, (G) = Gluten-Free, (V) = Vegetarian). Remember this legend.
@@ -767,6 +766,37 @@ def fallback_extract_modifiers(text: str) -> List[Dict[str, Any]]:
 
 # ============================== Flipdish builder (conditional modifiers) ==============================
 
+# --- NEW FUNCTION: Smart modifier key generator ---
+def _generate_group_fingerprint(grp: Dict[str, Any]) -> str:
+    """
+    Creates a unique key for a modifier group based on its caption,
+    settings, and (most importantly) its options.
+    """
+    caption_smart = smart_title(grp.get("caption") or "ADD")
+    key = caption_smart.strip().upper()
+    
+    min_sel = grp.get("min")
+    max_sel = grp.get("max")
+    
+    # Get normalized options
+    opt_keys = []
+    for opt in (grp.get("options") or []):
+        oname = smart_title((opt.get("caption") or "").strip())
+        # Use the price *as extracted*, as normalization happens later
+        price = opt.get("price") 
+        if oname:
+            # Create a key for the option
+            opt_keys.append(f"{oname.upper()}|{price}")
+    
+    # Sort the option keys to ensure consistency
+    # "A|1.0", "B|2.0" is the same as "B|2.0", "A|1.0"
+    opt_string = "-".join(sorted(opt_keys))
+    
+    # Final fingerprint
+    return f"{key}|{min_sel}|{max_sel}|{opt_string}"
+# --- END NEW FUNCTION ---
+
+
 def to_flipdish_json(
     extracted_pages: List[Dict[str, Any]],
     menu_name: str,
@@ -792,19 +822,20 @@ def to_flipdish_json(
 
     modifiers_index: Dict[str, Dict[str, Any]] = {}
 
-    def ensure_group(caption: str, min_sel: Optional[int] = None, max_sel: Optional[int] = None, can_repeat: Optional[bool] = None) -> Dict[str, Any]:
-        key_raw = caption or "ADD"
-        caption_smart = smart_title(key_raw if key_raw else "ADD")
-        key = caption_smart.strip().upper() 
+    # --- MODIFICATION: ensure_group now uses a FINGERPRINT as the key ---
+    def ensure_group(caption: str, fingerprint: str, min_sel: Optional[int] = None, max_sel: Optional[int] = None, can_repeat: Optional[bool] = None) -> Dict[str, Any]:
+        key = fingerprint # The key is now the unique fingerprint
         
         nowh = now_iso_hms()
         if key in modifiers_index:
             return modifiers_index[key]
+        
+        # This is a new, unique modifier group. Create it.
         g = {
             "etag": f"W/\"datetime'{nowz}'\"",
             "timestamp": nowh,
             "canSameItemBeSelectedMultipleTimes": True if can_repeat is None else bool(can_repeat),
-            "caption": caption_smart, 
+            "caption": caption, # Use the human-readable caption
             "enabled": True,
             "hiddenInOrderFlow": False,
             "id": guid(),
@@ -814,9 +845,11 @@ def to_flipdish_json(
             "items": [],
             "overrides": []
         }
-        g["_items_map"] = {}
+        g["_items_map"] = {} # Local map for de-duping options
         modifiers_index[key] = g
+        out["modifiers"].append(g) # Add to the final list
         return g
+    # --- END MODIFICATION ---
 
     def _ensure_option_item(group: Dict[str, Any], oname: str, price: Optional[float]) -> Dict[str, Any]:
         key_nm = oname.lower() + "|" + str(price if price is not None else -1)
@@ -845,6 +878,7 @@ def to_flipdish_json(
             "overrides": []
         }
         group["_items_map"][key_nm] = opt_item
+        group["items"].append(opt_item) # Add to the group's item list
         return opt_item
 
     def _link_group_to_parent(parent_entity: Dict[str, Any], group_obj: Dict[str, Any]) -> None:
@@ -860,22 +894,45 @@ def to_flipdish_json(
             "modifierId": group_obj["id"]
         })
 
-    def _process_group(parent_entity: Dict[str, Any], grp: Dict[str, Any]) -> None:
+    # --- MODIFICATION: _process_group now handles fingerprinting ---
+    def _process_group(parent_entity: Dict[str, Any], grp: Dict[str, Any], base_price: float) -> None:
         if not grp: return
-        g_caption = (grp.get("caption") or "ADD") 
+        
+        # 1. Normalize the prices *within* this group first
+        # This is for *conditional* modifiers that have their *own* size groups
+        grp_mods = grp.get("modifiers") or []
+        grp_price = grp.get("price") or 0.0
+        grp_mods, grp_price = _normalize_modifier_prices(grp_mods, grp_price)
+        grp["modifiers"] = grp_mods
+        grp["price"] = grp_price # This price is now the *add-on* price
+        
+        # 2. Generate the unique fingerprint
+        fingerprint = _generate_group_fingerprint(grp)
+        
+        # 3. Get or create the global group
+        g_caption = smart_title(grp.get("caption") or "ADD")
         g_min = grp.get("min"); g_max = grp.get("max")
         can_repeat = grp.get("canSameItemBeSelectedMultipleTimes")
-        group = ensure_group(g_caption, g_min, g_max, can_repeat) 
+        
+        group = ensure_group(g_caption, fingerprint, g_min, g_max, can_repeat) 
 
-        for opt in (grp.get("options") or []):
-            oname = smart_title((opt.get("caption") or "").strip()) 
-            if not oname: continue
-            price = opt.get("price")
-            opt_item = _ensure_option_item(group, oname, price)
-            for child_grp in (opt.get("modifiers") or []):
-                _process_group(opt_item, child_grp)
+        # 4. Populate the group's options (if not already done)
+        if not group.get("items"):
+            for opt in (grp.get("options") or []):
+                oname = smart_title((opt.get("caption") or "").strip()) 
+                if not oname: continue
+                
+                # Prices for options *inside* a group are normalized relative to the *item's* base price
+                opt_price = opt.get("price")
+                
+                # Recursive call to process conditional modifiers *on this option*
+                opt_item = _ensure_option_item(group, oname, opt_price)
+                for child_grp in (opt.get("modifiers") or []):
+                    _process_group(opt_item, child_grp, base_price=0.0) # Base price for conditional is 0
 
+        # 5. Link the parent (item or option) to this global group
         _link_group_to_parent(parent_entity, group)
+    # --- END MODIFICATION ---
 
     cat_index: Dict[str, Any] = {}
     
@@ -894,7 +951,6 @@ def to_flipdish_json(
                 cat_caption = re.sub(r'\bAND\b', '&', cat_caption)
                 cat_description = format_description(cat_in.get("description"))
                 
-                # --- MODIFICATION: Read new category_type field from AI ---
                 cat_type = cat_in.get("category_type", "Other") # Default to "Other"
                 ck = cat_caption.lower()
                 
@@ -909,7 +965,6 @@ def to_flipdish_json(
                         "items": [],
                         "overrides": []
                     }
-                    # Use the *classified type* for colors, not the name
                     colors = pick_category_colors(cat_type)
                     if colors:
                         cat["backgroundColor"] = colors["backgroundColor"]
@@ -922,14 +977,11 @@ def to_flipdish_json(
                         cat["notes"] = cat_description
                 
                 last_good_category_key = ck
-            # --- END MODIFICATION ---
 
             page = src_pdf_doc[page_i] if (attach_pdf_images and src_pdf_doc is not None) else None
 
-            # --- MODIFICATION: Re-ordered logic to support size price calculation ---
             for it in (cat_in.get("items") or []):
                 
-                # 1. Get all text and name info first
                 raw = (it.get("caption") or "").strip()
                 desc = (it.get("description") or "").strip()
                 notes = (it.get("notes") or "").strip()
@@ -937,21 +989,15 @@ def to_flipdish_json(
                 name = smart_title(name or "Item") 
                 raw_item_notes = " ".join(p for p in [desc, notes, inline] if p).strip()
 
-                # 2. Get initial base price
                 base_price = it.get("price")
-                # if base_price is None: # Old logic
-                #     base_price = parse_price_from_text(raw, desc, notes) or 0.0
-
-                # 3. Get modifiers
+                
                 llm_mods = it.get("modifiers") or []
                 if not llm_mods:
                     llm_mods = fallback_extract_modifiers(raw_item_notes)
                 
-                # 4. === NEW: Normalize prices and find TRUE base price ===
-                # This will find the lowest price, even if item price is 0 or null
+                # === NEW: Normalize prices and find TRUE base price ===
                 llm_mods, base_price = _normalize_modifier_prices(llm_mods, base_price)
                 
-                # 5. Get image URL
                 img_data_url = ""
                 if page is not None and name and fitz is not None:
                     rects = find_item_rects(page, name)
@@ -959,7 +1005,7 @@ def to_flipdish_json(
                         png = nearest_image_crop(page, rects[0])
                         if png: img_data_url = to_data_url(png)
 
-                # 6. Process dietary tags
+                # Process dietary tags
                 params_json_obj = {}
                 ai_official_tags = it.get("official_allergens") or []
                 ai_other_tags = it.get("other_dietary_tags") or []
@@ -970,15 +1016,10 @@ def to_flipdish_json(
                 abbreviations += re.findall(r'(\([\s]*[A-Z]{1,3}[\s]*\))', raw, re.I) # Check raw title too
                 scan_text += " " + " ".join(abbreviations).lower()
 
-                # --- MODIFICATION: Scan for custom legend symbols too ---
-                # This looks for G, 0, 00, 000 etc. but NOT as part of another word
-                # We search the raw caption for these symbols
                 custom_symbols = re.findall(r'\b([G0]{1,5})\b', raw) 
                 scan_text += " " + " ".join(custom_symbols).lower()
-                # --- END MODIFICATION ---
 
                 for keyword, flipdish_tag in ALL_DIETARY_KEYWORDS.items():
-                    # Check for keyword OR abbreviation
                     if re.search(fr'\b{re.escape(keyword)}\b', scan_text, re.I):
                          all_detected_tags.add(flipdish_tag)
                 
@@ -1007,7 +1048,6 @@ def to_flipdish_json(
                 
                 item_notes = format_description(temp_raw_notes)
                 
-                # 7. Create the item dictionary (NOW uses the corrected base_price)
                 item = {
                     "etag": f"W/\"datetime'{nowz}'\"",
                     "timestamp": now_iso_hms(),
@@ -1034,16 +1074,16 @@ def to_flipdish_json(
 
                 # 8. Process the modifier groups (NOW uses corrected prices)
                 for grp in llm_mods:
-                    _process_group(item, grp)
+                    # --- MODIFICATION: Pass the item's base price for context ---
+                    _process_group(item, grp, base_price=base_price)
 
                 cat["items"].append(item)
             # --- END MODIFICATION ---
 
-    # finalize modifiers
+    # finalize modifiers (cleanup _items_map)
     for g in modifiers_index.values():
-        g["items"] = list(g["_items_map"].values())
-        del g["_items_map"]
-        out["modifiers"].append(g)
+        if "_items_map" in g:
+            del g["_items_map"]
 
     out["categories"] = [c for c in out["categories"] if c.get("items")]
 
